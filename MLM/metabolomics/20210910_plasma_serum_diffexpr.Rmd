@@ -1,0 +1,259 @@
+---
+title: "Analysis pre-analytical plasma and serum"
+author: "Thomas Naake"
+date: "09/10/2021"
+fig_width: 15
+fig_height: 10
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: TRUE
+    theme: united
+    number_sections: true
+    highlight: tango
+    self_contained: no
+---
+
+```{r wd_metabolite, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "pdf")
+knitr::opts_knit$set(root.dir = "C:/Users/naake/Documents/GitLab/20210112_Metabolomics_Hagen_plasma_serum_metabolites/")
+```
+
+# Metabolites
+
+## Load the data
+
+Load packages.
+```{r load_packages, message = FALSE, warning = FALSE}
+library(MatrixQCvis)
+library(ggplot2)
+library(plotly)
+```
+
+Load the data. 
+```{r load_metabolite, show = FALSE, eval = TRUE, echo = TRUE}
+se_t <- readRDS("Preanalytical_SummarizedExperiment_Metabolite_transformed.RDS")
+se_i <- readRDS("Preanalytical_SummarizedExperiment_Metabolite_imputed.RDS")
+
+## create factors for the time to test between 0 h vs. 8 h 
+colData(se_t)$time <- as.factor(colData(se_t)$time)
+colData(se_i)$time <- as.factor(colData(se_i)$time)
+
+## the SummarizedExperiment objects do not contain person1, refactor the person
+## column
+colData(se_t)$person <- factor(colData(se_t)$person, levels = 2:6)
+colData(se_i)$person <- factor(colData(se_i)$person, levels = 2:6)
+```
+
+## Prepare data input for signature analysis (by Aurelien)
+
+Perform for the plasma and serum samples separately a differential expression
+analysis. Also, split prior to performing the analysis the data up in the 
+different temperature regimes.
+
+We will use here moderated t-tests adjusting for person-specific effects 
+and check for the contrast `time` (time point `0h` vs `8h`).
+
+### For plasma samples
+
+Define the model matrix and contrasts.
+```{r mM_plasma_metabolite}
+se_p <- se_i[, colData(se_i)$tissue == "Plasma"]
+
+## split up for temperature
+se_p_4C <- se_p[, colData(se_p)$temp == "4C"]
+se_p_RT <- se_p[, colData(se_p)$temp == "RT"]
+
+## obtain the colData
+cD_p_4C <- colData(se_p_4C)
+cD_p_RT <- colData(se_p_RT)
+
+## create the model matrix and define the contrast
+mM_p_4C <- model.matrix(as.formula("~ 0 + person + time"), data = cD_p_4C)
+contrasts_p_4C <- limma::makeContrasts(contrasts = "time8", levels = mM_p_4C)
+mM_p_RT <- model.matrix(as.formula("~ 0 + person + time"), data = cD_p_RT)
+contrasts_p_RT <- limma::makeContrasts(contrasts = "time8", levels = mM_p_RT)
+```
+
+Do the analysis for 4C.
+```{r diff_ttest_plasma_metabolite, eval = TRUE}
+## for 4C
+fit <- limma::lmFit(assay(se_p_4C), design = mM_p_4C)
+fit <- limma::contrasts.fit(fit = fit, contrasts = contrasts_p_4C)
+fit <- limma::eBayes(fit = fit, robust = TRUE)
+tT <- limma::topTable(fit, number = Inf, adjust.method = "fdr", p.value = 1)
+rmarkdown::paged_table(tT)
+tT <- cbind(name = rownames(tT), tT)
+partial_bundle(MatrixQCvis::volcanoPlot(tT))
+write.table(tT, file = "diff_expr_ttest_metabolites_time0vs8_plasma_4C.txt", 
+      sep = "\t", dec = ".", row.names = FALSE, col.names = TRUE)
+```
+
+Do the analysis for room temperature.
+```{r diff_ttest_plasma_RT_metabolite, eval = TRUE}
+## for RT
+fit <- limma::lmFit(assay(se_p_RT), design = mM_p_RT)
+fit <- limma::contrasts.fit(fit = fit, contrasts = contrasts_p_RT)
+fit <- limma::eBayes(fit = fit, robust = TRUE)
+tT <- limma::topTable(fit, number = Inf, adjust.method = "fdr", p.value = 1)
+rmarkdown::paged_table(tT)
+tT <- cbind(name = rownames(tT), tT)
+partial_bundle(MatrixQCvis::volcanoPlot(tT))
+write.table(tT, file = "diff_expr_ttest_metabolites_time0vs8_plasma_RT.txt", 
+      sep = "\t", dec = ".", row.names = FALSE, col.names = TRUE)
+```
+
+### For serum samples
+
+For serum samples, there is only one temperature level, `RT`.
+
+Define the model matrix and contrasts.
+```{r mM_serum_metabolite}
+se_s <- se_i[, colData(se_i)$tissue == "Serum"]
+
+## split up for temperature
+se_s_RT <- se_s[, colData(se_s)$temp == "RT"]
+
+## obtain the colData
+cD_s_RT <- colData(se_s_RT)
+
+## create the model matrix and define the contrast
+mM_s_RT <- model.matrix(as.formula("~ 0 + person + time"), data = cD_s_RT)
+contrasts_s_RT <- limma::makeContrasts(contrasts = "time8", levels = mM_s_RT)
+```
+
+Do the analysis for room temperature.
+```{r diff_ttest_serum_metabolite, eval = TRUE}
+## for RT
+fit <- limma::lmFit(assay(se_s_RT), design = mM_s_RT)
+fit <- limma::contrasts.fit(fit = fit, contrasts = contrasts_s_RT)
+fit <- limma::eBayes(fit = fit, robust = TRUE)
+tT <- limma::topTable(fit, number = Inf, adjust.method = "fdr", p.value = 1)
+rmarkdown::paged_table(tT)
+tT <- cbind(name = rownames(tT), tT)
+partial_bundle(MatrixQCvis::volcanoPlot(tT))
+write.table(tT, file = "diff_expr_ttest_metabolites_time0vs8_serum_RT.txt", 
+      sep = "\t", dec = ".", row.names = FALSE, col.names = TRUE)
+```
+
+
+# Proteins
+
+## Load the data
+
+
+```{r setwd_protein, echo = FALSE, message = FALSE, warning = FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/naake/Documents/GitLab/20210517_Proteomics_Torsten_plasma_serum_proteins")
+```
+
+Load the data. 
+```{r load_protein, show = FALSE, eval = TRUE, echo = TRUE}
+se_t <- readRDS("Preanalytical_SummarizedExperiment_Protein_transformed.RDS")
+se_i <- readRDS("Preanalytical_SummarizedExperiment_Protein_imputed.RDS")
+
+## remove the Biobank samples
+se_t <- se_t[, se_t$Replicate != "Biobank"]
+se_i <- se_i[, se_i$Replicate != "Biobank"]
+
+## create factors for the time to test between 0 h vs. 8 h 
+colData(se_t)$Time <- as.factor(colData(se_t)$Time)
+colData(se_i)$Time <- as.factor(colData(se_i)$Time)
+
+## refactor the person column
+colData(se_t)$Replicate <- factor(colData(se_t)$Replicate, levels = 1:6)
+colData(se_i)$Replicate <- factor(colData(se_i)$Replicate, levels = 1:6)
+```
+
+## Prepare data input for signature analysis (by Aurelien)
+
+Perform for the plasma and serum samples separately a differential expression
+analysis. Also, split prior to performing the analysis the data up in the 
+different temperature regimes.
+
+We will use here moderated t-tests adjusting for person-specific effects 
+and check for the contrast `time` (time point `0h` vs `8h`).
+
+### For plasma samples
+
+Define the model matrix and contrasts.
+```{r mM_plasma_protein}
+se_p <- se_i[, colData(se_i)$Type == "Plasma"]
+
+## split up for temperature
+se_p_4C <- se_p[, colData(se_p)$Temperature == "4C"]
+se_p_RT <- se_p[, colData(se_p)$Temperature == "RT"]
+
+## obtain the colData
+cD_p_4C <- colData(se_p_4C)
+cD_p_RT <- colData(se_p_RT)
+
+## create the model matrix and define the contrast
+mM_p_4C <- model.matrix(as.formula("~ 0 + Replicate + Time"), data = cD_p_4C)
+contrasts_p_4C <- limma::makeContrasts(contrasts = "Time8", levels = mM_p_4C)
+mM_p_RT <- model.matrix(as.formula("~ 0 + Replicate + Time"), data = cD_p_RT)
+contrasts_p_RT <- limma::makeContrasts(contrasts = "Time8", levels = mM_p_RT)
+```
+
+Do the analysis for 4C.
+```{r diff_ttest_plasma_protein, eval = TRUE}
+## for 4C
+fit <- limma::lmFit(assay(se_p_4C), design = mM_p_4C)
+fit <- limma::contrasts.fit(fit = fit, contrasts = contrasts_p_4C)
+fit <- limma::eBayes(fit = fit, robust = TRUE)
+tT <- limma::topTable(fit, number = Inf, adjust.method = "fdr", p.value = 1)
+rmarkdown::paged_table(tT)
+tT <- cbind(name = rownames(tT), tT)
+partial_bundle(MatrixQCvis::volcanoPlot(tT))
+write.table(tT, file = "diff_expr_ttest_proteins_time0vs8_plasma_4C.txt", 
+      sep = "\t", dec = ".", row.names = FALSE, col.names = TRUE)
+```
+
+Do the analysis for room temperature.
+```{r diff_ttest_plasma_RT_protein, eval = TRUE}
+## for RT
+fit <- limma::lmFit(assay(se_p_RT), design = mM_p_RT)
+fit <- limma::contrasts.fit(fit = fit, contrasts = contrasts_p_RT)
+fit <- limma::eBayes(fit = fit, robust = TRUE)
+tT <- limma::topTable(fit, number = Inf, adjust.method = "fdr", p.value = 1)
+rmarkdown::paged_table(tT)
+tT <- cbind(name = rownames(tT), tT)
+partial_bundle(MatrixQCvis::volcanoPlot(tT))
+write.table(tT, file = "diff_expr_ttest_proteins_time0vs8_plasma_RT.txt", 
+      sep = "\t", dec = ".", row.names = FALSE, col.names = TRUE)
+```
+
+### For serum samples
+
+For serum samples, there is only one temperature level, `RT`.
+
+Define the model matrix and contrasts.
+```{r mM_serum_protein}
+se_s <- se_i[, colData(se_i)$Type == "Serum"]
+
+## split up for temperature
+se_s_RT <- se_s[, colData(se_s)$Temperature == "RT"]
+
+## obtain the colData
+cD_s_RT <- colData(se_s_RT)
+
+## create the model matrix and define the contrast
+mM_s_RT <- model.matrix(as.formula("~ 0 + Replicate + Time"), data = cD_s_RT)
+contrasts_s_RT <- limma::makeContrasts(contrasts = "Time8", levels = mM_s_RT)
+```
+
+Do the analysis for room temperature.
+```{r diff_ttest_serum_protein, eval = TRUE}
+## for RT
+fit <- limma::lmFit(assay(se_s_RT), design = mM_s_RT)
+fit <- limma::contrasts.fit(fit = fit, contrasts = contrasts_s_RT)
+fit <- limma::eBayes(fit = fit, robust = TRUE)
+tT <- limma::topTable(fit, number = Inf, adjust.method = "fdr", p.value = 1)
+rmarkdown::paged_table(tT)
+tT <- cbind(name = rownames(tT), tT)
+partial_bundle(MatrixQCvis::volcanoPlot(tT))
+write.table(tT, file = "diff_expr_ttest_proteins_time0vs8_serum_RT.txt", 
+      sep = "\t", dec = ".", row.names = FALSE, col.names = TRUE)
+```
+
+

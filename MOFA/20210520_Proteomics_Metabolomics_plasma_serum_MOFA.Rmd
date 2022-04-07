@@ -1,0 +1,534 @@
+---
+title: "Analysis pre-analytical plasma and serum - MOFA"
+author: "Thomas Naake"
+date: "05/20/2021"
+fig_width: 15
+fig_height: 10
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: TRUE
+    theme: united
+    number_sections: true
+    highlight: tango
+    self_contained: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "pdf")
+knitr::opts_knit$set(root.dir = "C:/Users/naake/Documents/GitLab/20210520_Proteomics_Metabolomics_plasma_serum_MOFA/")
+```
+
+
+# Load the SummarizedExperiment objects
+
+Load the `SummarizedExperiment` objects from metabolomics and proteomics.
+
+```{r read_RDS_files}
+## load protein SE
+path_to_file <- "C:/Users/naake/Documents/GitLab/20210517_Proteomics_Torsten_plasma_serum_proteins/Preanalytical_SummarizedExperiment_Protein_transformed.RDS"
+protein <- readRDS(path_to_file)
+
+## load metabolite SE
+path_to_file <- "C:/Users/naake/Documents/GitLab/20210112_Metabolomics_Hagen_plasma_serum_metabolites/Preanalytical_SummarizedExperiment_Metabolite_transformed.RDS"
+metabolite <- readRDS(path_to_file)
+```
+
+Create same columns. First, for `protein` calculate means of replicates.
+```{r remove_and_rename, echo = TRUE, eval = TRUE, message = FALSE}
+library(SummarizedExperiment)
+prot_name <- colData(protein)$name
+prot_name <- unlist(
+    lapply(stringr::str_split(prot_name, pattern = "_Slot1"), "[", 1))
+prot_name_dup <- prot_name[duplicated(prot_name)]
+
+## rename the columns in protein
+colnames(protein) <- prot_name
+colData(protein)$name <- prot_name
+
+## iterate trough the duplicated columns and calculate the mean between 
+## replicates
+for(i in seq_along(prot_name_dup)) {
+    a_dup <- assay(protein)[, prot_name_dup[i] == colnames(protein)]
+    a_dup_mean <- apply(a_dup, 1, mean)
+    assay(protein)[, prot_name_dup[i] == colnames(protein)] <- a_dup_mean
+}
+
+## remove the duplicated columns from protein
+protein <- protein[, !duplicated(prot_name)]
+
+## remove the Biobank samples 
+protein <- protein[, !grepl(colnames(protein), pattern = "Biobank")]
+```
+
+Second, remove the columns with `C2` centrifugation and 
+rename the colnames in `metabolites` (Type_Temp_Time_Person), 
+
+
+```{r renaming}
+## remove the C2 samples
+metabolite <- metabolite[, !colData(metabolite)$centr == "C2"]
+
+## rename the colnames
+colnames(metabolite) <- paste0(
+    colData(metabolite)$tissue, "_", colData(metabolite)$temp, "_",
+    colData(metabolite)$time, "h_", colData(metabolite)$person)
+colData(metabolite)$name <- colnames(metabolite)
+```
+
+# Create MOFA object
+
+```{r load_data, echo = TRUE, eval = TRUE, message = FALSE}
+library(MOFA2)
+a_protein <- assay(protein)
+a_metabolite <- assay(metabolite)
+
+## what are the missing samples 
+## samples in protein, but not in metabolite
+colnames(a_protein)[!colnames(a_protein) %in% colnames(a_metabolite)]
+## samples in metabolite, but not in protein
+colnames(a_metabolite)[!colnames(a_metabolite) %in% colnames(a_protein)]
+
+## create intersect and truncate the assay that they contain the sampe samples
+cols <- intersect(colnames(a_protein), colnames(a_metabolite))
+
+data <- list(metabolite = assay(metabolite)[, cols], 
+             protein = assay(protein)[, cols])
+
+## remove the feature that only contains NA values
+data[["protein"]] <- data[["protein"]][!apply(data[["protein"]], 1, 
+                                                function(x) all(is.na(x))), ]
+
+## adjust the sample metadata
+samp <- cols
+metadata_df <- data.frame(
+    sample = samp,
+    group = unlist(lapply(strsplit(samp, split = "_"), "[", 1)),
+    temperature = unlist(lapply(strsplit(samp, split = "_"), "[", 2)),
+    time = unlist(lapply(strsplit(samp, split = "_"), "[", 3)),
+    person = unlist(lapply(strsplit(samp, split = "_"), "[", 4))
+)
+
+## cretae the MOFA object from the matrices
+MOFA <- create_mofa(data, groups = metadata_df$group)
+
+data_opts <- get_default_data_options(MOFA)
+##data_opts$scale_views <- TRUE
+##data_opts$scale_groups <- TRUE
+model_opts <- get_default_model_options(MOFA)
+model_opts$num_factors <- 15
+train_opts <- get_default_training_options(MOFA)
+train_opts$maxiter <- 10000
+## drop_factor_threshold: numeric indicating the threshold on fraction of 
+## variance explained to consider a factor inactive and drop it from the 
+## model. a value of 0.01 implies that factors explaining less 
+## than 1% of variance (in each view) will be dropped
+train_opts$seed <- 42
+train_opts$drop_factor_threshold <- 0.01
+train_opts$convergence_mode <- "slow"
+
+MOFA <- prepare_mofa(
+    object = MOFA,
+    data_options = data_opts,
+    model_options = model_opts,
+    training_options = train_opts
+)
+
+samples_metadata(MOFA) <- metadata_df
+
+plot_data_overview(MOFA)
+```
+
+```{r run_mofa, eval = TRUE, echo = TRUE}
+## finally train the model
+MOFA_trained <- run_mofa(MOFA)
+saveRDS(MOFA_trained, file = "MOFA_trained_proteomics_metabolomics.RDS")
+```
+
+```{r, eval = TRUE, echo = FALSE}
+MOFA_trained <- readRDS("MOFA_trained_proteomics_metabolomics.RDS")
+```
+
+Check if there is correlation between the factors.
+Factors should not show any significant correlation.
+```{r plot_factor_cor}
+plot_factor_cor(MOFA_trained)
+```
+
+
+
+# Factor association analysis
+
+Let's compute the interconnection of the sample metadata and factor values 
+before zooming into the individual factors.
+
+```{r eval=TRUE, echo=FALSE}
+correlate_factors_with_covariates <- function (object, covariates, factors = "all", groups = "all", 
+    abs = FALSE, plot = c("log_pval", "r"), alpha = 0.05, 
+    return_data = FALSE, transpose = FALSE, ...) {
+    if (!is(object, "MOFA")) 
+        stop("'object' has to be an instance of MOFA")
+    groups <- MOFA2:::.check_and_get_groups(object, groups)
+    metadata <- samples_metadata(object)
+    metadata <- metadata[metadata$group %in% groups, ]
+    if (is.character(covariates)) {
+        stopifnot(all(covariates %in% colnames(metadata)))
+        covariates <- metadata[, covariates, drop = FALSE]
+    }
+    else if (is.data.frame(covariates)) {
+        samples <- metadata$sample
+        if (is.null(rownames(covariates))) 
+            stop("The 'covariates' data.frame does not have samples names")
+        stopifnot(all(rownames(covariates) %in% samples))
+        covariates <- metadata[match(rownames(covariates), metadata$sample), 
+            ]
+    }
+    else {
+        stop("covariates argument not recognised. Please read the documentation: ?correlate_factors_with_covariates")
+    }
+    cols <- which(sapply(covariates, is.character))
+    if (length(cols >= 1)) {
+        covariates[cols] <- lapply(covariates[cols], as.factor)
+    }
+    cols <- which(!sapply(covariates, class) %in% c("numeric", 
+        "integer"))
+    if (length(cols >= 1)) {
+        cols.factor <- which(sapply(covariates, class) == "factor")
+        covariates[cols] <- lapply(covariates[cols], as.numeric)
+        warning("There are non-numeric values in the covariates data.frame, converting to numeric...")
+        covariates[cols] <- lapply(covariates[cols], as.numeric)
+    }
+    stopifnot(all(sapply(covariates, class) %in% c("numeric", 
+        "integer")))
+    factors <- MOFA2:::.check_and_get_factors(object, factors)
+    Z <- get_factors(object, factors = factors, groups = groups, 
+        as.data.frame = FALSE)
+    Z <- do.call(rbind, Z)
+    cor <- psych::corr.test(Z, covariates, method = "pearson", 
+        adjust = "BH")
+    plot <- match.arg(plot)
+    if (plot == "r") {
+        stat <- cor$r
+        if (abs) 
+            stat <- abs(stat)
+        if (transpose) 
+            stat <- t(stat)
+        if (return_data) 
+            return(stat)
+        corrplot(stat, tl.col = "black", title = "Pearson correlation coefficient", 
+            ...)
+    }
+    else if (plot == "log_pval") {
+        stat <- cor$p
+        stat[stat > alpha] <- 1
+        if (all(stat == 1)) 
+            stop("All p-values are 1.0, nothing to plot")
+        stat <- -log10(stat)
+        stat[is.infinite(stat)] <- 1000
+        if (transpose) 
+            stat <- t(stat)
+        if (return_data) 
+            return(stat)
+        col <- colorRampPalette(c("#FFFFFF", "#8B0000"))(100)
+        pheatmap::pheatmap(stat, main = "log10 adjusted p-values", 
+            cluster_rows = FALSE, color = col, ...)
+    }
+    else {
+        stop("'plot' argument not recognised. Please read the documentation: ?correlate_factors_with_covariates")
+    }
+}
+```
+
+```{r correlate_factors_with_covariates}
+correlate_factors_with_covariates(MOFA_trained,
+                    covariates = c("group", "person", "temperature", "time"),
+                    plot = "log_pval")
+```
+
+Factors 1, 3, and 4 seem to be associated with `person` and
+factor 8 with `time`
+
+# Variance decomposition
+
+The first step in the MOFA analysis is to quantify the amount of variance 
+explained (R2) by each factor in each data modality.
+```{r total_variance}
+## total variance explained per view and group
+MOFA_trained@cache[["variance_explained"]]
+
+## variance explained for every factor in per view and group
+head(MOFA_trained@cache$variance_explained$r2_per_factor[[1]]) # group 1 == plasma
+head(MOFA_trained@cache$variance_explained$r2_per_factor[[2]]) # group 2 == serum
+
+## plot variance explained estimates
+plot_variance_explained(MOFA_trained, x = "view", y = "factor") + 
+    ggplot2::scale_fill_gradient(low = "#FFFFFF", high = "#8B0000")
+```
+
+Plot that shows the explained variation per data modality
+```{r variance_explained}
+plot_variance_explained(MOFA_trained, x = "group", y = "factor", 
+    plot_total = T)[[2]]
+```
+
+## Visualization of single factors in latent space
+
+Each MOFA factor captures a different dimension of heterogeneity in the data.
+Mathematically, each factor ordinates cells along a one-dimensional axis 
+centered at zero. A Factor is a linear combination of initial features and 
+represents a source of data variability.
+Samples with different signs manifest opposite phenotypes 
+along the inferred axis of variation, with higher absolute value indicating 
+a stronger effect. On the image below, Factor values are located around the 
+zero axis as the data is mandatory centered prior to the Factor analysis.
+
+Note that the interpretation of factors is analogous to 
+the interpretation of the principal components in PCA. A larger absolute value 
+correlates with a more expressed biological effect.
+
+```{r vis_singlefactor_latentspace}
+## for factor 1 (separation along person)
+p1 <- plot_factor(MOFA_trained, factor = 1, color_by = "person", 
+                  shape_by = "time")
+p2 <- plot_factor(MOFA_trained, factor = 1, color_by = "person", 
+                  shape_by = "temperature")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+## for factor 2 (separation along person)
+p1 <- plot_factor(MOFA_trained, factor = 2, color_by = "person", 
+                  shape_by = "time")
+p2 <- plot_factor(MOFA_trained, factor = 2, color_by = "person", 
+                  shape_by = "temperature")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+## for factor 3 (separation along person)
+p1 <- plot_factor(MOFA_trained, factor = 3, color_by = "person", 
+                  shape_by = "time")
+p2 <- plot_factor(MOFA_trained, factor = 3, color_by = "person", 
+                  shape_by = "temperature")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+## for factor 4 (separation along person)
+p1 <- plot_factor(MOFA_trained, factor = 4, color_by = "person", 
+                  shape_by = "time")
+p2 <- plot_factor(MOFA_trained, factor = 4, color_by = "person", 
+                  shape_by = "temperature")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+## for factor 5
+p1 <- plot_factor(MOFA_trained, factor = 5, color_by = "person", 
+                  shape_by = "time")
+p2 <- plot_factor(MOFA_trained, factor = 5, color_by = "person", 
+                  shape_by = "temperature")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+## for factor 6
+p1 <- plot_factor(MOFA_trained, factor = 6, color_by = "person", 
+                  shape_by = "time")
+p2 <- plot_factor(MOFA_trained, factor = 6, color_by = "person", 
+                  shape_by = "temperature")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+## for factor 7
+p1 <- plot_factor(MOFA_trained, factor = 7, color_by = "person", 
+                  shape_by = "time")
+p2 <- plot_factor(MOFA_trained, factor = 7, color_by = "person", 
+                  shape_by = "temperature")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+## for factor 8 (separation along time)
+p1 <- plot_factor(MOFA_trained, factor = 8, color_by = "person", 
+                  shape_by = "time")
+p2 <- plot_factor(MOFA_trained, factor = 8, color_by = "person", 
+                  shape_by = "temperature")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+## Visualization of combinations of factors
+Scatter plots
+
+```{r vis_comb_factors}
+plot_factors(MOFA_trained, factors = 1:4, color_by = "person")
+```
+
+## Visualization of feature weights
+
+The weights provide a score for how strong each feature relates to each factor.
+Features with no association with the factor have values close to zero, while 
+features with strong association with the factor have large absolute values. 
+The sign of the weight indicates the direction of the effect: a positive weight
+indicates that the feature has higher levels in the cells with positive factor 
+values, and vice versa.
+
+Weights can be plotted using `plot_weights` (beeswarm plots) or
+`plot_top_weights` (scatter plots).
+
+```{r plot_weights}
+## axis that explains most of the variance, factor 1
+plot_weights(MOFA_trained, view = "metabolite", factor = 1,
+    nfeatures = 10, ## Number of features to highlight
+    scale = TRUE, ## Scale weights from -1 to 1
+    abs = FALSE) ## Take the absolute value?
+plot_top_weights(MOFA_trained, view = "metabolite", factor = 1, nfeatures = 10)
+
+plot_weights(MOFA_trained, view = "protein", factor = 1,
+    nfeatures = 10, ## Number of features to highlight
+    scale = TRUE, ## Scale weights from -1 to 1
+    abs = FALSE) ## Take the absolute value?
+plot_top_weights(MOFA_trained, view = "protein", factor = 1, nfeatures = 10)
+
+## factor 2
+plot_weights(MOFA_trained, view = "metabolite", factor = 2,
+    nfeatures = 10, ## Number of features to highlight
+    scale = TRUE, ## Scale weights from -1 to 1
+    abs = FALSE) ## Take the absolute value?
+plot_top_weights(MOFA_trained, view = "metabolite", factor = 2, nfeatures = 10)
+
+plot_weights(MOFA_trained, view = "protein", factor = 2,
+    nfeatures = 10, ## Number of features to highlight
+    scale = TRUE, ## Scale weights from -1 to 1
+    abs = FALSE) ## Take the absolute value?
+plot_top_weights(MOFA_trained, view = "protein", factor = 2, nfeatures = 10)
+
+## factor 3
+plot_weights(MOFA_trained, view = "metabolite", factor = 3,
+    nfeatures = 10, ## Number of features to highlight
+    scale = TRUE, ## Scale weights from -1 to 1
+    abs = FALSE) ## Take the absolute value?
+plot_top_weights(MOFA_trained, view = "metabolite", factor = 3, nfeatures = 10)
+
+plot_weights(MOFA_trained, view = "protein", factor = 3,
+    nfeatures = 10, ## Number of features to highlight
+    scale = TRUE, ## Scale weights from -1 to 1
+    abs = FALSE) ## Take the absolute value?
+plot_top_weights(MOFA_trained, view = "protein", factor = 3, nfeatures = 10)
+
+## factor 4
+plot_weights(MOFA_trained, view = "metabolite", factor = 4,
+    nfeatures = 10, ## Number of features to highlight
+    scale = TRUE, ## Scale weights from -1 to 1
+    abs = FALSE) ## Take the absolute value?
+plot_top_weights(MOFA_trained, view = "metabolite", factor = 4, nfeatures = 10)
+
+plot_weights(MOFA_trained, view = "protein", factor = 4,
+    nfeatures = 10, ## Number of features to highlight
+    scale = TRUE, ## Scale weights from -1 to 1
+    abs = FALSE) ## Take the absolute value?
+plot_top_weights(MOFA_trained, view = "protein", factor = 4, nfeatures = 10)
+
+## axis that associates with time
+## factor 8
+plot_weights(MOFA_trained, view = "metabolite", factor = 8, nfeatures = 10, 
+    scale = TRUE, abs = FALSE)
+plot_top_weights(MOFA_trained, view = "metabolite", factor = 8, nfeatures = 10)
+
+plot_weights(MOFA_trained, view = "protein", factor = 8, nfeatures = 10,
+    scale = TRUE, abs = FALSE)
+plot_top_weights(MOFA_trained, view = "protein", factor = 8, nfeatures = 10)
+```
+
+# Visualization of patterns in the input data
+
+Instead of looking at weights, it is useful to observe the coordinated 
+heterogeneity that MOFA captures in the original data. This can be done 
+using the `plot_data_heatmap` and `plot_data_scatter` function.
+
+## Heatmaps
+
+Heatmap of observations. Top features are selected by its weight in the 
+selected factor. By default, samples are ordered according to their 
+corresponding factor value.
+
+```{r plot_data_heatmap}
+## for the person-associated factors
+## factor 1
+plot_data_heatmap(MOFA_trained,
+  view = "metabolite", ## view of interest
+  factor = 1, ## factor of interest
+  features = 10, ## number of features to plot (they are selected by weight)
+  ## extra arguments that are passed to the `pheatmap` function
+  cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = TRUE, 
+  show_colnames = TRUE, scale = "row", 
+  annotation_samples = "person"
+)
+
+## factor 2
+plot_data_heatmap(MOFA_trained,
+  view = "metabolite", ## view of interest
+  factor = 2, ## factor of interest
+  features = 10, ## number of features to plot (they are selected by weight)
+  ## extra arguments that are passed to the `pheatmap` function
+  cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = TRUE, 
+  show_colnames = TRUE, scale = "row",
+  annotation_samples = "person"
+)
+
+## factor 3
+plot_data_heatmap(MOFA_trained,
+  view = "metabolite", ## view of interest
+  factor = 3, ## factor of interest
+  features = 10, ## number of features to plot (they are selected by weight)
+  ## extra arguments that are passed to the `pheatmap` function
+  cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = TRUE, 
+  show_colnames = TRUE, scale = "row",
+  annotation_samples = "person"
+)
+
+## factor 4
+plot_data_heatmap(MOFA_trained,
+  view = "metabolite", ## view of interest
+  factor = 4, ## factor of interest
+  features = 10, ## number of features to plot (they are selected by weight)
+  ## extra arguments that are passed to the `pheatmap` function
+  cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = TRUE, 
+  show_colnames = TRUE, scale = "row",
+  annotation_samples = "person"
+)
+
+## for time-associated factor 8
+plot_data_heatmap(MOFA_trained,
+  view = "metabolite", ## view of interest
+  factor = 8, ## factor of interest
+  features = 10, ## number of features to plot (they are selected by weight)
+  ## extra arguments that are passed to the `pheatmap` function
+  cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = TRUE, 
+  show_colnames = TRUE, scale = "row",
+  annotation_samples = "time"
+)
+```
+
+## Scatter plots
+
+Scatter plots of observations vs factor values. It is useful to add a linear
+regression estimate to visualize if the relationship between (top) features and
+factor values is linear.
+
+```{r plot_data_scatter}
+plot_data_scatter(MOFA_trained,
+  view = "metabolite", ## view of interest
+  factor = 8, ## factor of interest
+  features = 5, ## number of features to plot (they are selected by weight)
+  add_lm = TRUE, ## add linear regression
+  color_by = "time"
+)
+```
+
+## Non-linear
+
+The MOFA factors are linear (as in Principal Component analysis). Nevertheless, 
+the MOFA factors can be used as input to other methods that learn compact 
+nonlinear manifolds (t-SNE or UMAP).
+
+Run UMAP and t-SNE.
+
+```{r tsne}
+set.seed(42)
+MOFA_trained <- run_umap(MOFA_trained)
+MOFA_trained <- run_tsne(MOFA_trained, perplexity = 4)
+
+plot_dimred(MOFA_trained,
+  method = "TSNE", ## method can be either "TSNE" or "UMAP"
+  color_by = "person"
+)
+```

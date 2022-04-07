@@ -1,0 +1,1672 @@
+---
+title: "Analysis pre-analytical plasma and serum"
+author: "Thomas Naake"
+date: "05/18/2021"
+fig_width: 15
+fig_height: 10
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: TRUE
+    theme: united
+    number_sections: true
+    highlight: tango
+    self_contained: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "pdf")
+knitr::opts_knit$set(root.dir = "C:/Users/naake/Documents/GitLab/20210517_Proteomics_Torsten_plasma_serum_proteins/")
+```
+
+# Load the data
+
+Load packages.
+```{r, message = FALSE, warning = FALSE}
+library(MatrixQCvis)
+```
+
+
+Load the data and do some data manipulations. 
+
+```{r}
+setwd("C:/Users/naake/Documents/Projects/20210517_Proteomics_Torsten_plasma_serum_proteins/")
+path_to_file <- "20210510_TMKL_PreAnalytical_SerumPlasma_Report.xlsx"
+a <- openxlsx::read.xlsx(path_to_file, sheet = 1)
+
+## create colData
+cD <- openxlsx::read.xlsx(path_to_file, sheet = 2)
+colnames(cD)[colnames(cD) == "Sample_IDs"] <- "name"
+cD$Replicate[grepl(cD[, "name"], pattern = "Biobank")] <- "Biobank"
+cD$Time <- as.numeric(stringr::str_remove(cD$Time, pattern = "H"))
+
+## create rowData
+rD <- a[, c("PG.ProteinAccessions", "PG.Genes", "PG.ProteinDescriptions")]
+rownames(rD) <- rD[, "PG.ProteinAccessions"]
+
+## remove "[1-91]." and ".PG.Quantity"
+colnames(a) <- stringr::str_remove(colnames(a), pattern = "\\[[0-9]\\].|\\[[0-9][0-9]\\].")
+colnames(a) <- stringr::str_remove(colnames(a), pattern = ".PG.Quantity")
+
+## remove the columns that have "Exclude" in the column "Filter"
+cols_rem <- cD[cD[, "Filter"] == "Exclude", "name"]
+cols_rem <- cols_rem[!is.na(cols_rem)]
+a <- a[, !colnames(a) %in% cols_rem]
+cD <- cD[!cD[, "name"] %in% cols_rem, ]
+rownames(a) <- a[, "PG.ProteinAccessions"]
+a <- a[, !colnames(a) %in% colnames(rD)]
+
+## set cells which contain Filtered to NA (missing values are encoded as Filtered)
+a <- as.matrix(a)
+a[which(a == "Filtered")] <- NA
+mode(a) <- "numeric"
+
+## truncate colnames(a) and rownames(cD)/cD[, "name]
+pattern_rem <- "20210426_KLTM_Hagen_|20210416_KLTM_Hagen_|20210421_KLTM_Hagen_|20210422_KLTM_Hagen_"
+cD[, "name"] <- stringr::str_remove(cD[, "name"], pattern = pattern_rem)
+colnames(a) <- stringr::str_remove(colnames(a), pattern = pattern_rem)
+pattern_rem <- ".d"
+cD[, "name"] <- stringr::str_remove(cD[, "name"], pattern = pattern_rem)
+colnames(a) <- stringr::str_remove(colnames(a), pattern = pattern_rem)
+rownames(cD) <- cD[, "name"]
+
+## create SummarizedExperiment
+se <- SummarizedExperiment::SummarizedExperiment(assays = list(a),
+    rowData = rD, colData = cD)
+```
+
+Start the shiny application via
+```{r, eval = FALSE}
+shinyQC(se)
+```
+
+```{r, eval = FALSE, echo = F}
+ma_vals <- MatrixQCvis::MAvalues(se[, -grep(colnames(se), pattern = "Biobank")], log2 = TRUE, group = "Type")
+
+samples_plot <- c("Sample 1", "Sample 2", "Sample 3", "Sample 4", "Sample 5", "Sample 6")
+ma_vals$name <- gsub(ma_vals$name, pattern = "Plasma_4C_0h_1_Slot1-01_1_2429", replacement = "Sample 1")
+ma_vals$name <- gsub(ma_vals$name, pattern = "Plasma_4C_0h_4_Slot1-37_1_2436", replacement = "Sample 2")
+ma_vals$name <- gsub(ma_vals$name, pattern = "Plasma_4C_0h_3_Slot1-25_1_2421", replacement = "Sample 3")
+ma_vals$name <- gsub(ma_vals$name, pattern = "Plasma_4C_0h_5_Slot1-49_1_2423", replacement = "Sample 4")
+ma_vals$name <- gsub(ma_vals$name, pattern = "Plasma_4C_0h_6_Slot1-61_1_2416", replacement = "Sample 5")
+ma_vals$name <- gsub(ma_vals$name, pattern = "Plasma_4C_0h_4_Slot1-37_1_2425", replacement = "Sample 6")
+
+g <- MatrixQCvis::MAplot(ma_vals, group = "all", plot = samples_plot) + 
+  coord_fixed() + 
+  theme(text = element_text(size=20))
+ggsave(filename = "MA_plot_proteome.pdf", g)
+```
+
+
+Remove the sample `Plasma_4C_0h_4_Slot1-37_1_2425` since it shows lower 
+number of measured features and dimension reduction. 
+
+```{r}
+se <- se[, -which(colnames(a) == "Plasma_4C_0h_4_Slot1-37_1_2425")]
+```
+
+
+## Data manipulation: Normalization, transformation, imputation
+
+Plot here the intensities as boxplots of the raw intensities, the normalized 
+intensities, the transformed intensities and the imputed intensities. 
+
+```{r normalization_transformation_boxplot}
+## raw data
+createBoxplot(se = se, title = "raw", log2 = TRUE)
+partial_bundle(driftPlot(se, aggregation = "median"))
+partial_bundle(driftPlot(se, aggregation = "sum"))
+
+## normalize (data is already normalized by MaxQuant)
+##a_n <- assay(se) %>% normalizeAssay(., method = "quantile division", probs = 0.75)
+a_n <- assay(se) %>% normalizeAssay(., method = "none")
+se_n <- MatrixQCvis:::updateSE(se = se, assay = a_n)
+createBoxplot(se_n, title = "normalized", log2 = TRUE)
+partial_bundle(driftPlot(se_n, aggregation = "median"))
+partial_bundle(driftPlot(se_n, aggregation = "sum"))
+
+## transformation
+a_t <- a_n %>% transformAssay(., method = "vsn")
+se_t <- MatrixQCvis:::updateSE(se = se, assay = a_t)
+createBoxplot(se_t, title = "transformed", log2 = FALSE)
+partial_bundle(driftPlot(se_t, aggregation = "median"))
+partial_bundle(driftPlot(se_t, aggregation = "sum"))
+
+## imputation
+a_i <- a_t %>% imputeAssay(., method = "MinDet")
+se_i <- MatrixQCvis:::updateSE(se = se, assay = a_i)
+createBoxplot(se_i, title = "imputed", log2 = FALSE)
+partial_bundle(driftPlot(se_i, aggregation = "median"))
+partial_bundle(driftPlot(se_i, aggregation = "sum"))
+
+## save the SummarizedExperiment
+saveRDS(se_t, file = "Preanalytical_SummarizedExperiment_Protein_transformed.RDS")
+saveRDS(se_i, file = "Preanalytical_SummarizedExperiment_Protein_imputed.RDS")
+```
+
+## Dimensionality reduction
+Create dimension reduction plots via PCA, PCoA, UMAP and tSNE. 
+```{r dimension_red, warning=FALSE}
+params <- list(scale = TRUE, center = TRUE, 
+    method = "euclidean", ## dist
+    initial_dims = 10, max_iter = 100, dims = 3, perplexity = 3, ## tSNE
+    min_dist = 0.1, n_neighbors = 15, spread = 1)
+
+## PCA
+o_PCA <- ordination(x = a_i, type = "PCA", params = params)
+explVar_pca <- explVar(x = a_i, params = params, type = "PCA")
+tmp <- ordinationPlot(tbl = o_PCA, se = se_i, highlight = "Replicate", 
+    explainedVar = explVar_pca, x_coord = "PC1", y_coord = "PC2")
+partial_bundle(tmp)
+orca(tmp %>% layout(showlegend = TRUE), 
+    file = "dimension_reduction_proteomics_PCA_imputed.pdf")
+
+## PCoA 
+o_PCoA <- ordination(x = a_i, type = "PCoA", params = params)
+explVar_pcoa <- explVar(x = a_i, params = params, type = "PCoA")
+partial_bundle(ordinationPlot(tbl = o_PCoA, se = se_i, highlight = "Replicate", 
+    explainedVar = explVar_pcoa, x_coord = "Axis.1", y_coord = "Axis.2"))
+
+## UMAP
+o_UMAP <- ordination(x = a_i, type = "UMAP", params = params)
+tmp <- ordinationPlot(tbl = o_UMAP, se = se_i, highlight = "Replicate", 
+    x_coord = "X1", y_coord = "X2")
+partial_bundle(tmp)
+orca(tmp %>% layout(showlegend = TRUE), 
+    file = "dimension_reduction_metabolomics_UMAP_imputed.pdf")
+
+## tSNE
+o_tSNE <- ordination(x = a_i, type = "tSNE", params = params)
+tmp <- ordinationPlot(tbl = o_tSNE, se = se_i, highlight = "Replicate",
+    x_coord = "X1", y_coord = "X2")
+partial_bundle(tmp)
+orca(tmp %>% layout(showlegend = TRUE), 
+    file = "dimension_reduction_metabolomics_tSNE_imputed.pdf")
+```
+There is not such a person-specific effect as with the metabolomics data - 
+still, there are slight person-specifc differences (check the PLS-DA analysis).
+
+
+Conclusion: Anyway, we will adjust for the `person`!
+
+In the following we will remove the Biobank samples from the data set `se_t` and
+`se_i`.
+
+```{r}
+inds_remove <- grep(colnames(se_t), pattern = "Biobank|biobank")
+se_t <- se_t[, -inds_remove]
+se_i <- se_i[, -inds_remove]
+```
+
+
+# Split data in serum and plasma
+
+## PLS-DA 
+
+We perform here partial least square-discriminat 
+analysis to try to discriminate
+the samples based on the class vector `Y`. In our case here, `Y` will be 
+any of `Temperature`, `Time` or `Replicate`. `X` is a `n x p` data matrix, `Y` is a 
+factor of length `n` that indicates the class of each sample. 
+```{r pls}
+create_pls <- function(X, Y, separate = FALSE) {
+    ## find optimal ncomp
+    pls <- mixOmics::plsda(X, Y, ncomp=20)
+    set.seed(30) ## for reproducibility in this vignette
+    pls_perf <- mixOmics::perf(pls, validation = "Mfold", 
+      folds = 3, progressBar = FALSE, nrepeat = 30) 
+    plot(pls_perf, col = mixOmics::color.mixo(5:7), sd = TRUE,
+         legend.position = "vertical", measure = "overall", overlay = "dist")
+    plot(pls_perf, col = mixOmics::color.mixo(5:7), sd = TRUE,
+         legend.position = "none", measure = "overall", overlay = "dist")
+    ncomp <- pls_perf$choice.ncomp["overall", ]
+    dist_which <- which.max(ncomp)
+    dist_select <- names(dist_which)
+    ncomp <- as.numeric(ncomp[dist_which])
+    
+    ## find optimal number of variables to select on each component
+    list.keepX <- c(5:9,  seq(10, 100, 5)) ## define grid values
+    
+    set.seed(30) # for reproducibility in this vignette
+    pls_tune <- mixOmics::tune.splsda(X, Y, ncomp = ncomp, 
+        validation = 'Mfold', folds = 3, dist = dist_select, progressBar = FALSE,
+        measure = "BER", test.keepX = list.keepX, nrepeat = 30)
+    
+    error <- pls_tune$error.rate
+    ## optimal number of components based on t-tests on the error rate
+    ncomp <- ncol(pls_tune$choice.ncomp$values)
+    select.keepX <- pls_tune$choice.keepX[1:ncomp]
+    plot(pls_tune, col = mixOmics::color.jet(ncomp))
+
+    ## run the final model with the tuned parameters
+    pls <- mixOmics::splsda(X, Y, ncomp = ncomp, keepX = select.keepX, scale = TRUE)
+    
+    ## get xlim and ylim from pls
+    x_lim <- c(min(pls$variates$X[, 1]) - 1, max(pls$variates$X[, 1]) + 1)
+    y_lim <- c(min(pls$variates$X[, 2]) - 1, max(pls$variates$X[, 2]) + 1)
+    
+    mixOmics::plotIndiv(pls, ellipse = TRUE, xlim = x_lim, ylim = y_lim,
+        title = "", legend = TRUE)
+    mixOmics::plotIndiv(pls, ellipse = TRUE, xlim = x_lim, ylim = y_lim,
+        title = "", legend = TRUE, ind.names = FALSE, pch = 20)
+    
+    if (separate) {
+        pls_4C <- pls_RT <- pls
+        var_4C <- var_RT <- pls$variates
+        var_4C$Y[grepl(rownames(var_4C$Y), pattern = "_RT_"), ] <- NaN
+        var_4C$X[grepl(rownames(var_4C$X), pattern = "_RT_"), ] <- NaN
+        var_RT$Y[grepl(rownames(var_RT$Y), pattern = "_4C_"), ] <- NaN
+        var_RT$X[grepl(rownames(var_RT$X), pattern = "_4C_"), ] <- NaN
+        
+        ## assign to pls_RT and pls_4C
+        pls_4C$variates <- var_4C
+        pls_RT$variates <- var_RT
+        
+        mixOmics::plotIndiv(pls_RT, ellipse = FALSE, pch = 20, centroid = FALSE,
+            title = "only RT (visualization only)", xlim = x_lim, ylim = y_lim,
+            legend = TRUE, ind.names = FALSE)
+        mixOmics::plotIndiv(pls_4C, ellipse = FALSE, pch = 20, centroid = FALSE,
+            title = "only 4C (visualization only)", xlim = x_lim, ylim = y_lim,
+            legend = TRUE, ind.names = FALSE)
+    }
+    auc.pls <- mixOmics::auroc(pls)
+    print("")
+    print("-------------------")
+    print("Selected variables:")
+    mixOmics::selectVar(pls)$value
+}
+```
+
+### Plasma, variable time
+```{r pls_p_time, warning=FALSE, eval = 1:3}
+## plasma
+## for time
+inds_p <- colData(se_i)$Type == "Plasma"
+
+X <- t(assay(se_i)[, inds_p])
+Y <- colData(se_i)$Time[inds_p]
+create_pls(X, Y, separate = TRUE)
+```
+
+### Plasma, variable temperature
+```{r pls_p_temp, warning=FALSE, eval = FALSE}
+## temperature
+Y <- colData(se_i)$Temperature[inds_p]
+create_pls(X, Y, separate = TRUE)
+```
+
+### Plasma, variable person
+```{r pls_p_person, warning=FALSE, eval = FALSE}
+## person
+Y <- colData(se_i)$Replicate[inds_p]
+create_pls(X, Y, separate = TRUE)
+```
+
+### Plasma, variables time and temperature
+```{r pls_p_time_temp, warning=FALSE, eval = FALSE}
+## combine time and temp
+Y <- paste(colData(se_i)$Temperature, colData(se_i)$Time)[inds_p]
+create_pls(X, Y, separate = TRUE)
+```
+
+### Serum, variables time and person
+```{r pls_s, eval = 1:2}
+## serum
+inds_s <- colData(se_i)$Type == "Serum"
+
+## for time
+X <- t(assay(se_i)[, inds_s])
+Y <- colData(se_i)$Time[inds_s]
+
+## create_pls(X, Y, separate = FALSE)
+## Error in solve.default(Sr) : 
+##  system is computationally singular: reciprocal condition number = 5.26738e-18 
+
+## temp
+## only RT measurement
+
+## person
+Y <- colData(se_i)$Replicate[inds_s]
+##create_pls(X, Y, separate = FALSE)
+## Error in solve.default(Sr) : 
+##  system is computationally singular: reciprocal condition number = 7.25432e-19 
+
+```
+
+
+# Computation/statistical model
+
+In the following, we will perform a mixed linear model to check if there is 
+any effect from `Time` and `Temperature` treatment on the 
+protein levels. As `Serum` does not contain a `Temperature` treatment, we will 
+not include `Temperature` in the model for the 
+Serum samples. Furthermore for the plasma samples, we will calculate the effect
+of the interaction between `Time` and `Temperature` (`Time:Temperature`).
+
+We will include these factors as fixed effects and the
+`Replicate` (person) as a random effect. 
+
+In broad terms, fixed effects are variables that we expect will have an effect 
+on the dependent/response variable: they’re what you call explanatory 
+variables in a standard linear regression.
+
+On the other hand, random effects are usually grouping factors for which we 
+are trying to control. They are always categorical, as you can’t force R to 
+treat a continuous variable as a random effect. A lot of the time we are not 
+specifically interested in their impact on the response variable, but we know 
+that they might be influencing the patterns we see. 
+
+We have a response variable, the score and we are attempting to explain 
+part of the variation in score through fitting an explanatory variable as a 
+fixed effect. But the response variable has some residual variation (i.e. 
+unexplained variation) associated with covariate. By using random effects, 
+we are modeling that unexplained variation through variance.
+
+Some assumptions towards the data: 
+
+- Linearity between the covariate and the outcome variable at each level of 
+  the grouping variable. This can be checked by creating a grouped scatter 
+  plot of the covariate and the outcome variable.
+- The outcome variable should be approximately normally distributed. This can 
+  be checked using the Shapiro-Wilk test of normality on the model residuals.
+- Homoscedasticity or homogeneity of residuals variance for all groups. 
+  The residuals are assumed to have a constant variance (homoscedasticity)
+- No outliers in the groups.
+
+Run here the actual model using the lmer function `lmer` from the 
+`lmerTest` package. 
+
+[//]: # (robustlmm: We will calculate the p-values based on the approach outlined in )
+[//]: # (Geniole Shawn N., Proietti Valentina, Bird Brian M., Ortiz Triana L., Bonin Pierre L., Goldfarb Bernard, Watson Neil V. and Carré Justin M. 2019. Testosterone reduces the threat premium in competitive resource division. 286. Proceedings of the Royal Society B. http://doi.org/10.1098/rspb.2019.0720. )
+[//]: # This will use the degrees of freedom from `lmerTest::lmer` and the t values from `robustlmm::rlmer`. 
+
+## Automated building of mixed linear models for absolute levels (absolute)
+
+Define first a function `build_lme` to calculate the linear mixed models from
+the input. If the standard deviation of the random effect (`Replicate`) is 
+`0`, i.e. it is singular, remove the random effect and run an ANOVA using the
+`aov` function. We will use the following formulas for the 
+linear model `prot ~ Time*Temperature + (1|Replicate)` for plasma and 
+`prot ~ Time + (1|Replicate)` for serum where prot are the protein levels. 
+For the ANOVA we will use the formulas 
+`prot ~ Time*Temperature` for plasma and 
+`prot ~ Time` for serum.
+
+```{r, eval = TRUE, warning = FALSE}
+build_lme <- function(a, model_matrix, tissue = c("Plasma", "Serum")) {
+    
+    if (tissue == "Plasma") {
+        formula_model <- formula(prot ~ Time*Temperature + (1|Replicate))
+        formula_aov <- formula(prot ~ 1 + Time*Temperature)
+    } 
+    if (tissue == "Serum") {
+        formula_model <- formula(prot ~ Time + (1|Replicate))
+        formula_aov <- formula(prot ~ 1 + Time)
+    }
+
+    inds <- model_matrix$Type == tissue
+    mM <- model_matrix[inds, ]
+    a <- a[, inds]
+    
+    ## get number of proteins to iterate over
+    n_prot <- nrow(a)
+    
+    ## create a data.frame to store the results in: 
+    ## coefficient estimates in intercept, time, tempRT, centrC2, timetempRT
+    ## pvalues in the rows intercept_p, time_p, tempRT_p, centrC2_p, timetempRT_p
+    ## assumptions check in assump1_linearity, assump2_varhomogeneity, assump3_residnorm
+    tmp_n <- numeric(n_prot)
+    df <- data.frame(intercept = tmp_n, time = tmp_n, tempRT = tmp_n, 
+                     timetempRT = tmp_n, 
+                     intercept_p = tmp_n, time_p = tmp_n, tempRT_p = tmp_n, 
+                     timetempRT_p = tmp_n,
+                     assump1_linearity = tmp_n, assump2_varhomogeneity = tmp_n, 
+                     assump3_residnorm = tmp_n,
+                     lmerIsSingular = logical(n_prot),
+                     lmerPersonStdDev = tmp_n)
+    if (tissue == "Serum") df <- df[, -grep(colnames(df), pattern = "temp")]
+    rownames(df) <- rownames(a)
+    
+    for (i in seq_len(n_prot)) {
+        
+        ## cbind the protein intensities to model matrix
+        prot <- as.data.frame(cbind(mM, prot = a[i, ]))
+        
+        model <- lmerTest::lmer(formula_model, data = prot)
+        
+        ## retrieve summaries and coefficients
+        summ <- summary(model)
+        coefs <- coef(summ)
+
+        df$lmerIsSingular[i] <- lme4::isSingular(model)
+        df$lmerPersonStdDev[i] <- attr(summ$varcor$Replicate, "stddev")
+        
+        
+        ## what to do when Std.Dev of random effect Replicate is 0:
+        ## remove the random effect and use aov with time*temp or time 
+        if (lme4::isSingular(model)) {
+          
+            aov.model <- aov(formula_aov, data = prot)
+            summ <- summary(aov.model, intercept = TRUE)
+            coefs <- coef(aov.model)
+            
+            ## write the coefficients to df
+            df$intercept[i] <- as.numeric(coefs["(Intercept)"])
+            df$time[i] <- as.numeric(coefs["Time"])
+            if (tissue == "Plasma") {
+                df$tempRT[i] <- as.numeric(coefs["TemperatureRT"])
+                df$timetempRT[i] <- as.numeric(coefs["Time:TemperatureRT"])
+            }
+            
+            ## write the p-values to df
+            df$intercept_p[i] <- summ[[1]][["Pr(>F)"]][1]
+            df$time_p[i] <- summ[[1]][["Pr(>F)"]][2]
+            if (tissue == "Plasma") {
+                df$tempRT_p[i] <- summ[[1]][["Pr(>F)"]][3]
+                df$timetempRT_p[i] <- summ[[1]][["Pr(>F)"]][4]
+            }
+            
+            ## write assumption 1: linearity to df
+            df$assump1_linearity[i] <- 
+                coef(summary(lm(prot$prot ~ resid(aov.model))))[2, "Pr(>|t|)"]
+        
+            ## write assumption 2: homogeneity of variance to df
+            prot$model.F.Res <- resid(aov.model) 
+            prot$abs.model.F.Res <- abs(prot$model.F.Res)
+            prot$model.F.Res2 <- prot$abs.model.F.Res ^ 2
+            
+            ## ANOVA of the squared residuals against the random effect
+            levene.model.F <- lm(model.F.Res2 ~ Replicate, data = prot)
+            df$assump2_varhomogeneity[i] <- 
+                unlist(summary(aov(levene.model.F)))["Pr(>F)1"]
+    
+            ## assumption 3: the residuals of the model are normally distributed by qqplots
+            df$assump3_residnorm[i] <- shapiro.test(resid(aov.model))$p.value
+            
+        } else {
+            
+            ## write the coefficients to df
+            df$intercept[i] <- coefs["(Intercept)", "Estimate"]
+            df$time[i] <- coefs["Time", "Estimate"]
+            if (tissue == "Plasma") {
+                df$tempRT[i] <- coefs["TemperatureRT", "Estimate"]
+                df$timetempRT[i] <- coefs["Time:TemperatureRT", "Estimate"]
+            }
+            
+            ## write the p-values to df
+            df$intercept_p[i] <- coefs["(Intercept)", "Pr(>|t|)"]
+            df$time_p[i] <- coefs["Time", "Pr(>|t|)"]
+            if (tissue == "Plasma") {
+                df$tempRT_p[i] <- coefs["TemperatureRT", "Pr(>|t|)"]
+                df$timetempRT_p[i] <- coefs["Time:TemperatureRT", "Pr(>|t|)"]
+            }
+            
+            ## write assumption 1: linearity to df
+            df$assump1_linearity[i] <- 
+                coef(summary(lm(prot$prot ~ resid(model))))[2, "Pr(>|t|)"]
+        
+            ## write assumption 2: homogeneity of variance to df
+            prot$model.F.Res <- resid(model) 
+            prot$abs.model.F.Res <- abs(prot$model.F.Res)
+            prot$model.F.Res2 <- prot$abs.model.F.Res ^ 2
+            
+            ## ANOVA of the squared residuals against the random effect
+            levene.model.F <- lm(model.F.Res2 ~ Replicate, data = prot)
+            df$assump2_varhomogeneity[i] <- 
+                unlist(summary(aov(levene.model.F)))["Pr(>F)1"]
+    
+            ## assumption 3: the residuals of the model are normally distributed by qqplots
+            df$assump3_residnorm[i] <- shapiro.test(resid(model))$p.value
+          
+        } ## END: else statement
+
+        
+    } ## END: for loop
+    return(df)
+}
+```
+
+Apply the function on the data set `a_i` for the tissues `"Plasma"` and
+`"Serum"`. 
+```{r lme_se_i,eval=FALSE, warning = FALSE, message = FALSE}
+df_plasma <- build_lme(assay(se_i), model_matrix = colData(se_i),
+    tissue = "Plasma")
+df_serum <- build_lme(a_i, model_matrix = colData(se_i),
+    tissue = "Serum")
+save(df_plasma, df_serum, file = "lme_plasmaserum.RData")
+```
+
+```{r, show = FALSE, eval = TRUE}
+load("lme_plasmaserum.RData")
+```
+
+Perform Benjamini-Hochberg/Bonferroni adjustment:
+
+```{r}
+df_plasma_adj <- df_plasma
+df_serum_adj <- df_serum
+
+## function to adjust p values across the columns cols
+adjust_pvalues <- function(df, cols, method = "BH") {
+    df[, cols] <- apply(df[, cols], 2, FUN = p.adjust, method = method,
+                        n = nrow(df) * length(cols))
+    df
+}
+## adjust the p-values for coefficients and the assumptions for plasma
+df_plasma_adj <- adjust_pvalues(df_plasma, 
+    cols = c("intercept_p", "time_p", "tempRT_p", "timetempRT_p"), 
+    method = "BH")
+df_plasma_adj <- adjust_pvalues(df_plasma_adj, 
+    cols = c("assump1_linearity", "assump2_varhomogeneity", "assump3_residnorm"),
+    method = "bonferroni")
+
+## adjust the p-values for coefficients and the assumptions for serum
+df_serum_adj <- adjust_pvalues(df_serum, cols = c("intercept_p", "time_p"),
+    method = "BH")
+df_serum_adj <- adjust_pvalues(df_serum_adj, 
+    cols = c("assump1_linearity", "assump2_varhomogeneity", "assump3_residnorm"),
+    method = "bonferroni")
+
+## write to files 
+write.table(df_plasma, "lmm_plasma_proteins.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_plasma_adj, "lmm_plasma_proteins_adj.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_serum, "lmm_serum_proteins.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_serum_adj, "lmm_serum_proteins_adj.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+```
+
+Plot number of significant features.
+```{r barplot_significant_features}
+df_tmp <- matrix(
+    c(
+        c(length(which(df_plasma$time_p < 0.05)), "raw", "time", "plasma"),
+        c(length(which(df_plasma_adj$time_p < 0.05)), "BH", "time", "plasma"),
+        c(length(which(df_plasma$tempRT_p < 0.05)), "raw", "temperature", "plasma"),
+        c(length(which(df_plasma_adj$tempRT_p < 0.05)), "BH", "temperature", "plasma"),
+        c(length(which(df_plasma$timetempRT_p < 0.05)), "raw", "time:temperature", "plasma"),
+        c(length(which(df_plasma_adj$timetempRT_p < 0.05)), "BH", "time:temperature", "plasma"),
+        c(length(which(df_serum$time_p < 0.05)), "raw", "time", "serum"),
+        c(length(which(df_serum_adj$time_p < 0.05)), "BH", "time", "serum")
+    ), byrow = TRUE, ncol = 4) %>% as.data.frame()
+colnames(df_tmp) <- c("number", "p_value", "factor", "matrix")
+df_tmp$number <- as.numeric(df_tmp$number)
+df_tmp$factor <- factor(df_tmp$factor, 
+    levels = c("time", "temperature", "time:temperature"))
+df_tmp$p_value <- factor(df_tmp$p_value, levels = c("raw", "BH"))
+
+pal <- as.character(wesanderson::wes_palette("GrandBudapest2", 2))
+
+ggplot(df_tmp) + 
+    geom_bar(aes(x = factor, y = number, col = p_value, fill = p_value), 
+        stat = "identity", position = position_dodge2(width = 0.9, padding = 0.1, preserve = "single")) +
+    scale_fill_manual(values = pal) +
+    scale_color_manual(values = pal) +
+    facet_grid(~ matrix, scales = "free_x", space = "free") + 
+    xlab("") + ylab("number of features") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+
+Create a function `fc_diff` to calculate differences between time point `t` and
+time point `0h`, while other factors are identical. The function also allows 
+to calculate the relative changes from the time point `0h` on. 
+```{r fc_diff_fct}
+fc_diff <- function(x, difference = TRUE, relative = FALSE) {
+    x_change <- x
+    inds_keep <- rep(FALSE, ncol(x))
+    
+    for (person in 1:6) { ## iterate over persons
+        for (temp in c("RT", "4C")) {## iterate over temperature
+            for (time in c(0, 2, 4, 6, 8)) { ## iterate over time
+                for (tissue in c("Plasma", "Serum")) { ## iterate over tissue
+                    ## construct col_0 and col_t
+                    col_0 <- paste(tissue, temp, "0h", person, sep = "_")
+                    col_t <- paste(tissue, temp, paste0(time, "h"), person, sep = "_")
+                    ind_col_0 <- grepl(pattern = col_0, x = colnames(x))
+                    ind_col_t <- grepl(pattern = col_t, x = colnames(x))
+
+                    if (any(ind_col_0) & any(ind_col_t)) {
+                        col_0_mean <- x[, ind_col_0]
+                        col_t_mean <- x[, ind_col_t]
+                        if (is.matrix(col_0_mean))
+                            col_0_mean <- apply(col_0_mean, 1, mean, na.rm = TRUE)
+                        if (is.matrix(col_t_mean))
+                            col_t_mean <- apply(col_t_mean, 1, mean, na.rm = TRUE)
+                        
+                        ## calculate difference between col_t and col_0
+                        if (difference) {
+                            x_change[, ind_col_t] <-  col_t_mean - col_0_mean
+                        }
+                        if (relative) {
+                            ## divide change by the value of col_0 and 
+                            ## multiply by 100
+                            x_change[, ind_col_t] <- col_t_mean / col_0_mean * 100  
+                        }
+                        if (relative) {
+                            ## set t0 to 0 and display other changes relative to
+                            ## 0 instead of 100
+                            x_change[, ind_col_t] <- x_change[, ind_col_t] - 100
+                        }
+                        
+                        inds_keep[which(ind_col_0)[1]] <- TRUE
+                        inds_keep[which(ind_col_t)[1]] <- TRUE
+                    }
+                }
+            }
+        }
+    }
+    colnames(x_change) <- unlist(lapply(
+      stringr::str_split(string = colnames(x_change), pattern = "_Slot"), "[", 1))
+    x_change <- x_change[, inds_keep]
+    return(x_change)
+}
+```
+
+
+## Automated building of mixed linear models for absolute levels (relative)
+
+Calculate the relative changes (in %) from timepoint 0h to the time points 
+0h, 2h, 4h, 8h and use these relative changes as input for the linear mixed model. 
+We will not calculate the differences beforehand. 
+
+```{r,eval=TRUE, warning = FALSE, message = FALSE}
+## calculate first the relative changes
+a_rel <- fc_diff(assay(se_i), difference = FALSE, relative = TRUE)
+cD_rel <- colData(se_i)
+cD_rel$name <- paste(cD_rel$Type, cD_rel$Temperature, paste0(cD_rel$Time, "h"), 
+                                                cD_rel$Replicate, sep = "_")
+cD_rel <- cD_rel[!duplicated(cD_rel$name), ]
+rownames(cD_rel) <- cD_rel$name
+```
+```{r lme_rel, eval=FALSE, warning=FALSE, message=FALSE}
+df_plasma_rel <- build_lme(a_rel, model_matrix = cD_rel,
+    tissue = "Plasma")
+df_serum_rel <- build_lme(a_rel, model_matrix = cD_rel,
+    tissue = "Serum")
+save(a_rel, df_plasma_rel, df_serum_rel,
+     file = "lme_plasmaserum_relative.RData")
+```
+```{r,show=FALSE}
+load("lme_plasmaserum_relative.RData")
+```
+
+Adjust the p-values using the BH/Bonferroni correction method. 
+```{r}
+## adjust the p-values for coefficients and the assumptions for plasma
+df_plasma_rel_adj <- adjust_pvalues(df_plasma_rel, 
+    cols = c("intercept_p", "time_p", "tempRT_p", "timetempRT_p"),
+    method = "BH")
+df_plasma_rel_adj <- adjust_pvalues(df_plasma_rel_adj, 
+    cols = c("assump1_linearity", "assump2_varhomogeneity", "assump3_residnorm"),
+    method = "bonferroni")
+
+## adjust the p-values for coefficients and the assumptions for serum
+df_serum_rel_adj <- adjust_pvalues(df_serum_rel,
+    cols = c("intercept_p", "time_p"), 
+    method = "BH")
+df_serum_rel_adj <- adjust_pvalues(df_serum_rel_adj,
+    cols = c("assump1_linearity", "assump2_varhomogeneity", "assump3_residnorm"),
+    method = "bonferroni")
+
+## write to files 
+write.table(df_plasma_rel, "lmm_plasma_proteins_rel.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_plasma_rel_adj, "lmm_plasma_proteins_rel_adj.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_serum_rel, "lmm_serum_proteins_rel.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_serum_rel_adj, "lmm_serum_proteins_rel_adj.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+```
+
+
+## Automated building of mixed linear models for changes (absolute)
+
+Calculate the absolute changes from time point `0h` to the time points 
+`0h`, `2h`, `4h`, `8h` and use these changes as input for the linear mixed model. 
+
+```{r lme_diff, eval=1:2, warning = FALSE, message = FALSE}
+## calculate first the changes
+a_diff <- fc_diff(assay(se_i), difference = TRUE, relative = FALSE)
+df_plasma_diff <- build_lme(a_diff, model_matrix = cD_rel, tissue = "Plasma")
+df_serum_diff <- build_lme(a_diff, model_matrix = cD_rel, tissue = "Serum")
+save(a_diff, df_plasma_diff, df_serum_diff, 
+     file = "lme_plasmaserum_diff.RData")
+```
+```{r, show=FALSE}
+load("lme_plasmaserum_diff.RData")
+```
+
+Adjust the p-values using the BH/Bonferroni correction method. 
+```{r}
+## adjust the p-values for coefficients and the assumptions for plasma
+df_plasma_diff_adj <- adjust_pvalues(df_plasma_diff, 
+    cols = c("intercept_p", "time_p", "tempRT_p", "timetempRT_p"),
+    method = "BH")
+df_plasma_diff_adj <- adjust_pvalues(df_plasma_diff_adj, 
+    cols = c("assump1_linearity", "assump2_varhomogeneity", "assump3_residnorm"),
+    method = "bonferroni")
+
+## adjust the p-values for coefficients and the assumptions for serum
+df_serum_diff_adj <- adjust_pvalues(df_serum_diff,
+    cols = c("intercept_p", "time_p"),
+    method = "BH")
+df_serum_diff_adj <- adjust_pvalues(df_serum_diff_adj,
+    cols = c("assump1_linearity", "assump2_varhomogeneity", "assump3_residnorm"),
+    method = "bonferroni")
+
+## write to files 
+write.table(df_plasma_diff, "lmm_plasma_proteins_diff.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_plasma_diff_adj, "lmm_plasma_proteins_diff_adj.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_serum_diff, "lmm_serum_proteins_diff.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_serum_diff_adj, "lmm_serum_proteins_diff_adj.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+```
+
+## Automated building of mixed linear models for changes (relative)
+
+Calculate the relative changes (in %) from timepoint 0h to the time points 
+0h, 2h, 4h, 8h and use these relative changes as input for the linear mixed model. 
+
+```{r lme_diff_rel, eval=1:2, warning = FALSE, message = FALSE}
+## calculate first the relative changes
+a_diff_rel <- fc_diff(assay(se_i), difference = TRUE, relative = TRUE)
+df_plasma_diff_rel <- build_lme(a_diff_rel, model_matrix = cD_rel, 
+    tissue = "Plasma")
+df_serum_diff_rel <- build_lme(a_diff_rel, model_matrix = cD_rel, 
+    tissue = "Serum")
+save(a_diff_rel, df_plasma_diff_rel, df_serum_diff_rel, 
+     file = "lme_plasmaserum_diff_relative.RData")
+```
+```{r,show=FALSE}
+load("lme_plasmaserum_diff_relative.RData")
+```
+
+Adjust the p-values using the BH/Bonferroni correction method. 
+```{r}
+## adjust the p-values for coefficients and the assumptions for plasma
+df_plasma_diff_rel_adj <- adjust_pvalues(df_plasma_diff_rel, 
+    cols = c("intercept_p", "time_p", "tempRT_p", "timetempRT_p"),
+    method = "BH")
+df_plasma_diff_rel_adj <- adjust_pvalues(df_plasma_diff_rel_adj, 
+    cols = c("assump1_linearity", "assump2_varhomogeneity", "assump3_residnorm"),
+    method = "bonferroni")
+
+## adjust the p-values for coefficients and the assumptions for serum
+df_serum_diff_rel_adj <- adjust_pvalues(df_serum_diff_rel,
+    cols = c("intercept_p", "time_p"),
+    method = "BH")
+df_serum_diff_rel_adj <- adjust_pvalues(df_serum_diff_rel_adj,
+    cols = c("assump1_linearity", "assump2_varhomogeneity", "assump3_residnorm"),
+    method = "bonferroni")
+
+## write to files 
+write.table(df_plasma_diff_rel, "lmm_plasma_proteins_diff_rel.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_plasma_diff_rel_adj, "lmm_plasma_proteins_diff_rel_adj.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_serum_diff_rel, "lmm_serum_proteins_diff_rel.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+write.table(df_serum_diff_rel_adj, "lmm_serum_proteins_diff_rel_adj.csv", quote = FALSE,
+    row.names = TRUE, col.names = TRUE, sep = "\t")
+```
+
+
+# Results
+
+In the following section, we will manually check the proteins
+that change due to `Time`, `Temperature` or `Time:Temperature`. Check which 
+is significant after BH correction.
+
+We will use here the data set with the (normalized), transformed and imputed
+intensity values (the `assay(se_i)` data set).
+
+## What are the proteins that change during time and temperature?
+
+Here we will plot all proteins that change during time (this involved 
+the main effect `time` and the interaction effect `timetempRT_p`).
+We do this for plasma and serum samples.
+
+Remember that we calculated the linear models from four data sets:
+(1) absolute intensity values, i.e. the (normalized) and transformed 
+intensity values; (2) the relative changes in percent from the 
+data set (1) where the `0h` time point corresponds to 100%;
+(3) the change in the (normalized) and transformed intensity values
+with `0h` as the reference; and (4) the relative change in percent 
+from the data set (3) where the `0h` time point corresponds to
+100%.
+
+### Absolute intensity values (absolute)
+
+Use here the data set `assay(se_i)`. 
+```{r plot_change_sign_fct, show = FALSE}
+plot_change_sign <- function(y, model_matrix, df, col_p, label = "transformed intensities") {
+  
+  ## calculate mean between duplicated values
+  cols <- colnames(y)
+  cols <- lapply(lapply(strsplit(cols, split = "_"), "[", 1:4), paste, collapse = "_")
+  cols <- unlist(cols)
+  colnames(y) <- cols
+  
+  for (i in seq_len(ncol(y))) {
+      inds_col <- which(colnames(y) == cols[i])
+      if (length(inds_col) > 1) {
+          y[, inds_col] <- apply(y[, inds_col], 1, mean, na.rm = TRUE)
+      }
+  }
+  
+  ## remove duplicated values
+  y <- y[, !duplicated(cols)]
+  
+  
+  sign <- df[df[, col_p] <= 0.05, ]
+  print(rownames(sign))
+  model_matrix <- as.data.frame(model_matrix)
+  
+  ## remove duplicated values
+  model_matrix <- model_matrix[!duplicated(cols),]
+  
+  for (i in rownames(sign)) {
+      df <- cbind(model_matrix, prot = y[i,]) ## 
+      g <- ggplot(df, aes(x = Time, y = prot)) + 
+          geom_point(aes(color = Replicate)) +
+          geom_line(aes(group = Replicate, color = Replicate)) + 
+          facet_wrap(. ~ Temperature + Type) + ylab(label) + 
+          xlab("time (h)") + ggtitle(i) + theme_bw()
+      print(g)
+  }
+}
+```
+
+```{r plot_change_sign}
+## print names of significant (before p-value adjustment)
+## plasma
+(plasma_time_sign <- rownames(df_plasma)[df_plasma[, "time_p"] < 0.05])
+(plasma_temp_sign <- rownames(df_plasma)[df_plasma[, "tempRT_p"] < 0.05])
+(plasma_timetemp_sign <- rownames(df_plasma)[df_plasma[, "timetempRT_p"] < 0.05])
+
+## serum
+(serum_time_sign <- rownames(df_serum)[df_serum[, "time_p"] < 0.05])
+
+## for adjusted p-values
+## for plasma and time
+plot_change_sign(y = assay(se_i), model_matrix = colData(se_i), 
+    df = df_plasma_adj, col_p = "time_p", 
+    label = "transformed intensities (A.U.)")
+## for plasma and interaction timetempRT
+plot_change_sign(y = assay(se_i), model_matrix = colData(se_i),
+    df = df_plasma_adj, col_p = "timetempRT_p", 
+    label = "transformed intensities (A.U.)")
+## for plasma and temperature
+plot_change_sign(y = assay(se_i), model_matrix = colData(se_i), 
+    df = df_plasma_adj, col_p = "tempRT_p", 
+    label = "transformed intensities (A.U.)")
+
+## for serum and time
+plot_change_sign(y = assay(se_i), model_matrix = colData(se_i), 
+    df = df_serum_adj, col_p = "time_p", 
+    label = "transformed intensities (A.U.)")
+## no samples for different temp/timetempRT
+```
+
+### Absolute intensity values (relative)
+
+Use here the data set `a_rel`. 
+```{r plot_change_sign_rel, eval=TRUE}
+## print names of significant (before p-value adjustment)
+## plasma
+(plasma_rel_time_sign <- rownames(df_plasma_rel)[df_plasma_rel[, "time_p"] < 0.05])
+(plasma_rel_temp_sign <- rownames(df_plasma_rel)[df_plasma_rel[, "tempRT_p"] < 0.05])
+(plasma_rel_timetemp_sign <- rownames(df_plasma_rel)[df_plasma_rel[, "timetempRT_p"] < 0.05])
+
+## serum
+(serum_rel_time_sign <- rownames(df_serum_rel)[df_serum_rel[, "time_p"] < 0.05])
+
+## for adjusted p-values
+## for plasma and time
+plot_change_sign(y = a_rel, model_matrix = cD_rel, df = df_plasma_rel_adj, 
+    col_p = "time_p", label = "transformed intensities (relative, %)")
+## for plasma and interaction timetempRT
+plot_change_sign(y = a_rel, model_matrix = cD_rel, df = df_plasma_rel_adj, 
+    col_p = "timetempRT_p", label = "transformed intensities (relative, %)")
+## for plasma and time
+plot_change_sign(y = a_rel, model_matrix = cD_rel, df = df_plasma_rel_adj, 
+    col_p = "time_p", label = "transformed intensities (relative, %)")
+
+## for serum and time
+plot_change_sign(y = a_rel, model_matrix = cD_rel, df = df_serum_rel_adj, 
+    col_p = "time_p", label = "transformed intensities (relative, %)")
+```
+
+
+### Change of intensity values ('absolute')
+
+Use here the data set `a_diff`. 
+```{r plot_change_diff}
+## print names of significant (before p-value adjustment)
+## plasma
+(plasma_diff_time_sign <- rownames(df_plasma_diff)[df_plasma_diff[, "time_p"] < 0.05])
+(plasma_diff_temp_sign <- rownames(df_plasma_diff)[df_plasma_diff[, "tempRT_p"] < 0.05])
+(plasma_diff_timetemp_sign <- rownames(df_plasma_diff)[df_plasma_diff[, "timetempRT_p"] < 0.05])
+
+## serum
+(serum_diff_time_sign <- rownames(df_serum_diff)[df_serum_diff[, "time_p"] < 0.05])
+
+## for adjusted p-values
+## for plasma and time
+plot_change_sign(y = a_diff, model_matrix = cD_rel, df = df_plasma_diff_adj, 
+    col_p = "time_p", label = "change of intensities (absolute)")
+## for plasma and interaction timetempRT
+plot_change_sign(y = a_diff, model_matrix = cD_rel, df = df_plasma_diff_adj, 
+    col_p = "timetempRT_p", label = "change of intensities (absolute)")
+## for serum and time only
+plot_change_sign(y = a_diff, model_matrix = cD_rel, df = df_serum_diff_adj, 
+    col_p = "time_p", label = "change of intensities (absolute)")
+
+## for serum and time
+plot_change_sign(y = a_diff, model_matrix = cD_rel, df = df_serum_diff_adj, 
+    col_p = "time_p", label = "change of intensities (absolute)")
+```
+
+### Change of intensity values ('relative')
+
+Use here the data set `a_diff_rel`. 
+```{r plot_change_sign_diff_rel}
+## print names of significant (before p-value adjustment)
+## plasma
+(plasma_diff_rel_time_sign <- rownames(df_plasma_diff_rel)[df_plasma_diff_rel[, "time_p"] < 0.05])
+(plasma_diff_rel_temp_sign <- rownames(df_plasma_diff_rel)[df_plasma_diff_rel[, "tempRT_p"] < 0.05])
+(plasma_diff_rel_timetemp_sign <- rownames(df_plasma_diff_rel)[df_plasma_diff_rel[, "timetempRT_p"] < 0.05])
+
+## serum
+(serum_diff_rel_time_sign <- rownames(df_serum_diff_rel)[df_serum_diff_rel[, "time_p"] < 0.05])
+
+## for adjusted p-values
+## for plasma and time
+plot_change_sign(y = a_diff_rel, model_matrix = cD_rel, df = df_plasma_diff_rel_adj, 
+    col_p = "time_p", label = "change of intensities (relative, %)")
+## for plasma and interaction timetempRT
+plot_change_sign(y = a_diff_rel, model_matrix = cD_rel, df = df_plasma_diff_rel_adj, 
+    col_p = "timetempRT_p", label = "change of intensities (relative, %)")
+## for serum and time only
+plot_change_sign(y = a_diff_rel, model_matrix = cD_rel,df = df_serum_diff_rel_adj, 
+    col_p = "time_p", label = "change of intensities (relative, %)")
+
+## for serum and time
+plot_change_sign(y = a_diff_rel, model_matrix = cD_rel, df = df_serum_diff_rel_adj, 
+    col_p = "time_p", label = "change of intensities (relative, %)")
+```
+
+## Visualizations of changes on a global level
+
+```{r global_change_fct, show=FALSE}
+global_change <- function(se, df_plasma, df_serum, label,
+      errorbar = FALSE) {
+
+    int <- assay(se)
+    colData(se)$name <- colnames(se)
+    model_matrix <- as.data.frame(colData(se))
+  
+    ## make the data.frame long to prepare for plotting
+    long <- tibble::as_tibble(int, rownames = "Row") %>%
+        tidyr::pivot_longer(-c(Row), names_to = "name", values_to = "Value")
+    long <- long %>% 
+        dplyr::mutate(name = stringr::str_remove(name, pattern = "^X[0-9]*_"))
+    
+    ## add model_matrix values by left_join
+    model_matrix <- model_matrix %>% 
+        dplyr::mutate(name = stringr:::str_remove(name, pattern = "^[0-9]*_"))
+    long <- dplyr::left_join(long, model_matrix %>% 
+        tibble::as_tibble(), by = "name")
+  
+    ## calculate the mean and sd values between the groups
+    long_sum <- long %>% 
+      group_by(Type, Temperature, Time, Row) %>% 
+      summarise(mean_value = mean(Value), sd_value = sd(Value))
+
+    ## remove C2 entries
+    #x_long_sum_cut <- x_long_sum[pull(x_long_sum, "centr") == "C1", ]
+
+    ## add a column and add information on the significant change 
+    ## (either time or timetempRT)
+    long_sum <- tibble::tibble(long_sum, sign = "not significant")
+    
+    plasma_sign <- df_plasma[df_plasma[, "time_p"]  <= 0.05 |
+                             df_plasma[, "timetempRT_p"] <= 0.05, ]
+    serum_sign <- df_serum[df_serum[, "time_p"]  <= 0.05, ]
+    long_sum <- dplyr::mutate(long_sum,
+        sign = ifelse(Row %in% rownames(plasma_sign) & Type == "Plasma", 
+                      "significant_plasma", sign))
+    long_sum <- dplyr::mutate(long_sum, 
+        sign = ifelse(Row %in% rownames(serum_sign) & Type == "Serum", 
+                      "significant_serum", sign))
+
+    ## do the actual plotting
+    # long_sum <- long_sum[!(long_sum$Row %in% 
+    #     c("Creatinine", "PC.aa.C38:1", "DG(16:1_18:1)", "FA(20:3)")), ]
+      
+    p <- ggplot(long_sum, aes(x = Time, y = mean_value, group = Row, color = sign)) + 
+        geom_point(size = 0.15) + 
+        geom_line(aes(group = Row), size = 0.15, alpha = 0.1)
+    p <- p + 
+        geom_point(data = subset(long_sum,
+            sign %in% c("significant_plasma", "significant_serum")),
+            aes(color = sign), size = 0.15, alpha = 0.1) +
+        geom_line(data = subset(long_sum,
+            sign %in% c("significant_plasma", "significant_serum")),
+            aes(group = Row, color = sign), size = 0.15, alpha = 0.1)
+    p <- p + 
+        scale_y_continuous(trans = ggallin::pseudolog10_trans,
+            breaks = c(-7, -5, -3, -2, -1, -0.5, 0,
+                       0.5, 1, 2, 3, 5, 7), limits = c(-7, 7)) + 
+        scale_color_manual(values = c("lightgrey", "red", "orange")) +
+        xlab("time (h)") + ylab(label) +
+        facet_grid(~ Type + Temperature) +
+        theme_bw() + theme(legend.position = "none")
+    return(p)
+}
+
+global_change_violin <- function(se, df_plasma, df_serum, label,
+                          errorbar = FALSE, interactive = TRUE) {
+
+    int <- assay(se)
+    colData(se)$name <- colnames(se)
+    model_matrix <- as.data.frame(colData(se))
+  
+    ## make the data.frame long to prepare for plotting
+    long <- tibble::as_tibble(int, rownames = "Row") %>%
+        tidyr::pivot_longer(-c(Row), names_to = "name", values_to = "Value")
+    long <- long %>% 
+        dplyr::mutate(name = stringr::str_remove(name, pattern = "^X[0-9]*_"))
+    
+    ## add model_matrix values by left_join
+    model_matrix <- model_matrix %>% 
+        dplyr::mutate(name = stringr:::str_remove(name, pattern = "^[0-9]*_"))
+    long <- dplyr::left_join(long, model_matrix %>% 
+        tibble::as_tibble(), by = "name")
+  
+    ## calculate the mean and sd values between the groups
+    long_sum <- long %>% 
+        group_by(Type, Temperature, Time, Row) %>% 
+        summarise(mean_value = mean(Value), sd_value = sd(Value))
+
+    ## add a column and add information on the significant change 
+    ## (either time or timetempRT)
+    long_sum <- tibble::tibble(long_sum, sign = "not significant")
+    
+    plasma_sign <- df_plasma[df_plasma$time_p <= 0.05 |
+        df_plasma$timetempRT_p <= 0.05 | df_plasma$tempRT_p <= 0.05, ]
+    serum_sign <- df_serum[df_serum$time_p <= 0.05, ]
+    long_sum <- dplyr::mutate(long_sum,
+        sign = ifelse(Row %in% rownames(plasma_sign) & Type == "Plasma", 
+                      "significant_plasma", sign))
+    long_sum <- dplyr::mutate(long_sum, 
+        sign = ifelse(Row %in% rownames(serum_sign) & Type == "Serum", 
+                      "significant_serum", sign))
+    
+    ## remove the features that are not significant
+    long_sum <- long_sum[long_sum$sign != "not significant", ]
+    long_sum <- long_sum[long_sum$Time != 0, ]
+    long_sum$mean_value <- abs(long_sum$mean_value)
+    long_sum$Time <- factor(long_sum$Time)
+    
+    ## do the actual plotting
+    ggplot(long_sum) +
+        geom_boxplot(aes(x = Time, y = mean_value)) +
+        facet_wrap(~ Type + Temperature) +
+        ylab(label) +
+        theme_bw()
+        
+}
+```
+
+Create a static plot that is based on the relative values (`a_rel), but
+takes the significances/p-values from the unadjusted data frame of the 
+absolute values (`se_i_C`; `df_plasma` and `df_serum`). This figure is 
+meant as an overview and aggregation on the significances. 
+
+```{r global_change_rel_with_absolute_values, eval = TRUE}
+se_tmp <- se_i
+cols <- colnames(se_tmp)
+cols <- lapply(strsplit(cols, split = "_"), function(x) paste(x[1:4], collapse = "_"))
+cols <- unlist(cols)
+colnames(se_tmp) <- cols
+se_tmp <- se_tmp[, !duplicated(cols)]
+
+se_i_diff <- MatrixQCvis:::updateSE(se_tmp, a_diff)
+global_change(se = se_i_diff, df_plasma = df_plasma_adj, df_serum = df_serum_adj,
+    label = "change of intensities (A.U.)")
+global_change_violin(se = se_i_diff, df_plasma = df_plasma_adj, df_serum = df_serum_adj,
+    label = "absolute change of transformed intensities (A.U.)")
+```
+
+## Proteins that change in their levels by 5% and 20%
+
+Next to the significant changes, we will report here the proteins that 
+change in their levels by `>±5%` and `>±20%` after `2h` and `8h`. We will 
+report the protein when it is below or above the threshold in at 
+least one `Replicate` (person). 
+
+Return the names of the protein and the total number of the proteins
+```{r proteins_percent_rel}
+## get the columns for the different factor combinations
+t2_RT_p <- grepl(colnames(a_rel), pattern = "Plasma_RT_2h")
+t2_RT_p[colnames(a_rel) == "Plasma_RT_2h_1"] <- FALSE
+t8_RT_p <- grepl(colnames(a_rel), pattern = "Plasma_RT_8h")
+t2_RT_s <- grepl(colnames(a_rel), pattern = "Serum_RT_2h")
+t2_RT_s[colnames(a_rel) == "Serum_RT_2h_1"] <- FALSE
+t8_RT_s <- grepl(colnames(a_rel), pattern = "Serum_RT_8h")
+
+t2_4C_p <- grepl(colnames(a_rel), pattern = "Plasma_4C_2h")
+t2_4C_p[colnames(a_rel) == "Plasma_4C_2h_1"] <- FALSE
+t8_4C_p <- grepl(colnames(a_rel), pattern = "Plasma_4C_8h")
+
+get_proteins_percent <- function(x, cols, percent, min_number) {
+    above_thr <- apply(abs(x[, cols]) >= percent, 1, sum)
+    names(which(above_thr >= min_number))
+}
+
+## require the change in at least 4 of the 5 persons (for 2h time point) or 
+## 4 of the 5 persons (for the 8h time point)
+thr_t2 <- 4
+thr_t8 <- 4
+
+## 2h, ±5% change, plasma, RT
+proteins_t2_RT_p_5 <- get_proteins_percent(x = a_rel, cols = t2_RT_p, percent = 5, min_number = thr_t2)
+
+## 2h, ±20% change, plasma, RT
+proteins_t2_RT_p_20 <- get_proteins_percent(x = a_rel, cols = t2_RT_p, percent = 20, min_number = thr_t2)
+
+## 8h, ±5% change, plasma, RT
+proteins_t8_RT_p_5 <- get_proteins_percent(x = a_rel, cols = t8_RT_p, percent = 5, min_number = thr_t8)
+
+## 8h, ±20% change, plasma, RT
+proteins_t8_RT_p_20 <- get_proteins_percent(x = a_rel, cols = t8_RT_p, percent = 20, min_number = thr_t8)
+
+## 2h, ±5% change, serum, RT
+proteins_t2_RT_s_5 <- get_proteins_percent(x = a_rel, cols = t2_RT_s, percent = 5, min_number = thr_t2)
+
+## 2h, ±20% change, serum, RT
+proteins_t2_RT_s_20 <- get_proteins_percent(x = a_rel, cols = t2_RT_s, percent = 20, min_number = thr_t2)
+
+## 8h, ±5% change, serum, RT
+proteins_t8_RT_s_5 <- get_proteins_percent(x = a_rel, cols = t8_RT_s, percent = 5, min_number = thr_t8)
+
+## 8h, ±20% change, serum, RT
+proteins_t8_RT_s_20 <- get_proteins_percent(x = a_rel, cols = t8_RT_s, percent = 20, min_number = thr_t8)
+
+## 2h, ±5% change, plasma, 4C
+proteins_t2_4C_p_5 <- get_proteins_percent(x = a_rel, cols = t2_4C_p, percent = 5, min_number = thr_t2)
+  
+## 2h, ±20% change, plasma, 4C
+proteins_t2_4C_p_20 <- get_proteins_percent(x = a_rel, cols = t2_4C_p, percent = 20, min_number = thr_t2)
+
+## 8h, ±5% change, plasma, 4C
+proteins_t8_4C_p_5 <- get_proteins_percent(x = a_rel, cols = t8_4C_p, percent = 5, min_number = thr_t8)
+
+## 8h, ±20% change, plasma, 4C
+proteins_t8_4C_p_20 <- get_proteins_percent(x = a_rel, cols = t8_4C_p, percent = 20, min_number = thr_t8)
+
+## 2h, ±5% change, serum, 4C ## no 4C for serum
+## 2h, ±20% change, serum, 4C ## no 4C for serum
+## 8h, ±5% change, serum, 4C ## no 4C for serum
+## 8h, ±20% change, serum, 4C ## no 4C for serum
+
+
+## print here the number of the proteins for the different factor combinations
+## total number of proteins in the data set
+nrow(a_rel)
+
+## 2h, ±5% change, plasma, RT
+length(proteins_t2_RT_p_5)
+
+## 2h, ±20% change, plasma, RT
+length(proteins_t2_RT_p_20)
+
+## 8h, ±5% change, plasma, RT
+length(proteins_t8_RT_p_5)
+
+## 8h, ±20% change, plasma, RT
+length(proteins_t8_RT_p_20)
+
+## 2h, ±5% change, serum, RT
+length(proteins_t2_RT_s_5)
+
+## 2h, ±20% change, serum, RT
+length(proteins_t2_RT_s_20)
+
+## 8h, ±5% change, serum, RT
+length(proteins_t8_RT_s_5)
+
+## 8h, ±20% change, serum, RT
+length(proteins_t8_RT_s_20)
+
+## 2h, ±5% change, plasma, 4C
+length(proteins_t2_4C_p_5)
+
+## 2h, ±20% change, plasma, 4C
+length(proteins_t2_4C_p_20)
+
+## 8h, ±5% change, plasma, 4C
+length(proteins_t8_4C_p_5)
+
+## 8h, ±20% change, plasma, 4C
+length(proteins_t8_4C_p_20)
+
+## 2h, ±5% change, serum, 4C ## no 4C for serum
+## 2h, ±20% change, serum, 4C ## no 4C for serum
+## 8h, ±5% change, serum, 4C ## no 4C for serum
+## 8h, ±20% change, serum, 4C ## no 4C for serum
+
+## create a plot to visualize the number of proteins
+df <- data.frame(
+    t2_RT_p_5 = length(proteins_t2_RT_p_5),
+    t2_RT_p_20 = length(proteins_t2_RT_p_20),
+    t8_RT_p_5 = length(proteins_t8_RT_p_5),
+    t8_RT_p_20 = length(proteins_t8_RT_p_20),
+    t2_RT_s_5 = length(proteins_t2_RT_s_5),
+    t2_RT_s_20 = length(proteins_t2_RT_s_20),
+    t8_RT_s_5 = length(proteins_t8_RT_s_5),
+    t8_RT_s_20 = length(proteins_t8_RT_s_20),
+    t2_4C_p_5 = length(proteins_t2_4C_p_5),
+    t2_4C_p_20 = length(proteins_t2_4C_p_20),
+    t8_4C_p_5 = length(proteins_t8_4C_p_5),
+    t8_4C_p_20 = length(proteins_t8_4C_p_20)
+)
+cols <- colnames(df)
+df <- df %>% tidyr::pivot_longer(1:ncol(df))
+
+c_spl <- strsplit(cols, split = "_")
+df <- tibble::tibble(df, 
+    time = ifelse(unlist(lapply(c_spl, "[", 1)) == "t2", "2h", "8h"),
+    temp = unlist(lapply(c_spl, "[", 2)),
+    tissue = ifelse(unlist(lapply(c_spl, "[", 3)) == "p", "plasma", "serum"),
+    percent = unlist(lapply(c_spl, "[", 4))
+)
+df$name <- factor(df$name, df$name)
+
+ggplot(df, aes(x = name, y = value)) + 
+    geom_bar(aes(fill = interaction(percent, time)), stat = "identity") +
+    ylim(0, 200) + facet_grid(~ tissue + temp, scales = "free", space = "free") +
+    ylab("number of proteins") + xlab("factor combination") +
+    theme_bw() + theme(axis.text.x = element_text(angle = 90))
+
+## create another plot that shows the actual percent change, take the mean
+## of the replicates
+feat_remove <- unique(rownames(which(abs(a_rel) > 1000, arr.ind=T)))
+feat_remove
+a_tmp <- a_rel[!rownames(a_rel) %in% feat_remove, ]
+t2_RT_p_perc <- apply(a_tmp[, t2_RT_p], 1, mean)
+t8_RT_p_perc <- apply(a_tmp[, t8_RT_p], 1, mean)
+t2_4C_p_perc <- apply(a_tmp[, t2_4C_p], 1, mean)
+t8_4C_p_perc <- apply(a_tmp[, t8_4C_p], 1, mean)
+t2_RT_s_perc <- apply(a_tmp[, t2_RT_s], 1, mean)
+t8_RT_s_perc <- apply(a_tmp[, t8_RT_s], 1, mean)
+
+## RT_p
+proteins_t2_RT_p <- get_proteins_percent(x = a_rel, cols = t2_RT_p, percent = 0, min_number = 0)
+proteins_t8_RT_p <- get_proteins_percent(x = a_rel, cols = t8_RT_p, percent = 0, min_number = 0)
+int_28 <- union(proteins_t2_RT_p, proteins_t8_RT_p)
+int_28 <- int_28[!int_28 %in% feat_remove]
+df_tmp <- data.frame(
+    t2_RT_p = t2_RT_p_perc[int_28],
+    t8_RT_p = t8_RT_p_perc[int_28]
+)
+df <- df_tmp %>% tibble::rownames_to_column(var = "feature") %>%
+    tidyr::pivot_longer(-feature)
+
+## 4C_p
+proteins_t2_4C_p <- get_proteins_percent(x = a_rel, cols = t2_4C_p, percent = 0, min_number = 0)
+proteins_t8_4C_p <- get_proteins_percent(x = a_rel, cols = t8_4C_p, percent = 0, min_number = 0)
+int_28 <- union(proteins_t2_4C_p, proteins_t8_4C_p)
+int_28 <- int_28[!int_28 %in% feat_remove]
+df_tmp <- data.frame(
+    t2_4C_p = t2_4C_p_perc[int_28],
+    t8_4C_p = t8_4C_p_perc[int_28]
+)
+df_tmp <- df_tmp %>% tibble::rownames_to_column(var = "feature") %>%
+    tidyr::pivot_longer(-feature)
+df <- rbind(df, df_tmp)
+
+## RT_s
+proteins_t2_RT_s <- get_proteins_percent(x = a_rel, cols = t2_RT_s, percent = 0, min_number = 0)
+proteins_t8_RT_s <- get_proteins_percent(x = a_rel, cols = t8_RT_s, percent = 0, min_number = 0)
+int_28 <- union(proteins_t2_RT_s, proteins_t8_RT_s)
+int_28 <- int_28[!int_28 %in% feat_remove]
+df_tmp <- data.frame(
+    t2_RT_s = t2_RT_s_perc[int_28],
+    t8_RT_s = t8_RT_s_perc[int_28]
+)
+df_tmp <- df_tmp %>% tibble::rownames_to_column(var = "feature") %>%
+    tidyr::pivot_longer(-feature)
+df <- rbind(df, df_tmp)
+
+## RT_s_20
+# int_28 <- union(proteins_t2_RT_s_20, proteins_t8_RT_s_20)
+# int_28 <- int_28[!int_28 %in% feat_remove]
+# df_tmp <- data.frame(
+#     t2_RT_s_20 = t2_RT_s_perc[int_28],
+#     t8_RT_s_20 = t8_RT_s_perc[int_28]
+# )
+# df_tmp <- df_tmp %>% tibble::rownames_to_column(var = "feature") %>%
+#     tidyr::pivot_longer(-feature)
+# df <- rbind(df, df_tmp)
+df$value <- abs(df$value)
+
+c_spl <- strsplit(df$name, split = "_")
+df <- tibble::tibble(df,
+    time = ifelse(unlist(lapply(c_spl, "[", 1)) == "t2", "2h", "8h"),
+    temp = unlist(lapply(c_spl, "[", 2)),
+    tissue = ifelse(unlist(lapply(c_spl, "[", 3)) == "p", 
+                "plasma", "serum"),
+    percent = unlist(lapply(c_spl, "[", 4))
+)
+df$name <- factor(df$name, unique(df$name))
+df$keep <- FALSE
+
+## remove the non significant features
+plasma_sign <- df_plasma_adj[df_plasma_adj$time_p <= 0.05 | 
+    df_plasma_adj$tempRT_p <= 0.05 | df_plasma_adj$timetempRT_p <= 0.05, ]
+df[df$feature %in% rownames(plasma_sign) & df$tissue == "plasma", "keep"] <- TRUE
+serum_sign <- df_serum_adj[df_serum_adj$time_p <= 0.05, ]
+df[df$feature %in% rownames(serum_sign) & df$tissue == "serum", "keep"] <- TRUE
+df <- df[df$keep, ]
+
+ggplot(df, aes(x = name, y = value)) + 
+    geom_boxplot(aes(fill = time)) + 
+    ##geom_line(aes(group = feature)) +
+    ylim(0, 80) +
+    ##scale_y_continuous(trans = ggallin::pseudolog10_trans,
+    ##    breaks = c(0, 5, 10, 20, 50, 100), limits = c(0, 100)) +
+    facet_grid(~ tissue + temp, scales = "free", space = "free") +
+    ylab("% (absolute)") + xlab("factor combination") +
+    theme_bw() + theme(axis.text.x = element_text(angle = 90))
+```
+
+We do the same for the data set `a_diff_rel`: 
+
+```{r proteins_percent_diff_rel}
+## get the columns for the different factor combinations
+t2_RT_p <- grepl(colnames(a_diff_rel), pattern = "Plasma_RT_2h")
+t2_RT_p[colnames(a_diff_rel) == "Plasma_RT_2h_1"] <- FALSE
+t8_RT_p <- grepl(colnames(a_diff_rel), pattern = "Plasma_RT_8h")
+t2_RT_s <- grepl(colnames(a_diff_rel), pattern = "Serum_RT_2h")
+t2_RT_s[colnames(a_diff_rel) == "Serum_RT_2h_1"] <- FALSE
+t8_RT_s <- grepl(colnames(a_diff_rel), pattern = "Serum_RT_8h")
+
+t2_4C_p <- grepl(colnames(a_diff_rel), pattern = "Plasma_4C_2h")
+t2_4C_p[colnames(a_diff_rel) == "Plasma_4C_2h_1"] <- FALSE
+t8_4C_p <- grepl(colnames(a_diff_rel), pattern = "Plasma_4C_8h")
+
+get_proteins_percent <- function(x, cols, percent, min_number) {
+    above_thr <- apply(abs(x[, cols]) >= percent, 1, sum)
+    names(which(above_thr >= min_number))
+}
+
+## require the change in at least 5 of the 6 persons (for 2h time point) or 
+## 5 of the 6 persons (for the 8h time point)
+
+## 2h, ±5% change, plasma, RT
+proteins_t2_RT_p_5 <- get_proteins_percent(x = a_diff_rel, cols = t2_RT_p, percent = 5, min_number = thr_t2)
+
+## 2h, ±20% change, plasma, RT
+proteins_t2_RT_p_20 <- get_proteins_percent(x = a_diff_rel, cols = t2_RT_p, percent = 20, min_number = thr_t2)
+
+## 8h, ±5% change, plasma, RT
+proteins_t8_RT_p_5 <- get_proteins_percent(x = a_diff_rel, cols = t8_RT_p, percent = 5, min_number = thr_t8)
+
+## 8h, ±20% change, plasma, RT
+proteins_t8_RT_p_20 <- get_proteins_percent(x = a_diff_rel, cols = t8_RT_p, percent = 20, min_number = thr_t8)
+
+## 2h, ±5% change, serum, RT
+proteins_t2_RT_s_5 <- get_proteins_percent(x = a_diff_rel, cols = t2_RT_s, percent = 5, min_number = thr_t2)
+
+## 2h, ±20% change, serum, RT
+proteins_t2_RT_s_20 <- get_proteins_percent(x = a_diff_rel, cols = t2_RT_s, percent = 20, min_number = thr_t2)
+
+## 8h, ±5% change, serum, RT
+proteins_t8_RT_s_5 <- get_proteins_percent(x = a_diff_rel, cols = t8_RT_s, percent = 5, min_number = thr_t8)
+
+## 8h, ±20% change, serum, RT
+proteins_t8_RT_s_20 <- get_proteins_percent(x = a_diff_rel, cols = t8_RT_s, percent = 20, min_number = thr_t8)
+
+## 2h, ±5% change, plasma, 4C
+proteins_t2_4C_p_5 <- get_proteins_percent(x = a_diff_rel, cols = t2_4C_p, percent = 5, min_number = thr_t2)
+
+## 2h, ±20% change, plasma, 4C
+proteins_t2_4C_p_20 <- get_proteins_percent(x = a_diff_rel, cols = t2_4C_p, percent = 20, min_number = thr_t2)
+
+## 8h, ±5% change, plasma, 4C
+proteins_t8_4C_p_5 <- get_proteins_percent(x = a_diff_rel, cols = t8_4C_p, percent = 5, min_number = thr_t8)
+
+## 8h, ±20% change, plasma, 4C
+proteins_t8_4C_p_20 <- get_proteins_percent(x = a_diff_rel, cols = t8_4C_p, percent = 20, min_number = thr_t8)
+
+## 2h, ±5% change, serum, 4C ## no 4C for serum
+## 2h, ±20% change, serum, 4C ## no 4C for serum
+## 8h, ±5% change, serum, 4C ## no 4C for serum
+## 8h, ±20% change, serum, 4C ## no 4C for serum
+
+## print here the number of the proteins for the different factor 
+## combinations
+## total number of proteins in the data set
+nrow(a_diff_rel)
+
+## 2h, ±5% change, plasma, RT
+length(proteins_t2_RT_p_5)
+
+## 2h, ±20% change, plasma, RT
+length(proteins_t2_RT_p_20)
+
+## 8h, ±5% change, plasma, RT
+length(proteins_t8_RT_p_5)
+
+## 8h, ±20% change, plasma, RT
+length(proteins_t8_RT_p_20)
+
+## 2h, ±5% change, serum, RT
+length(proteins_t2_RT_s_5)
+
+## 2h, ±20% change, serum, RT
+length(proteins_t2_RT_s_20)
+
+## 8h, ±5% change, serum, RT
+length(proteins_t8_RT_s_5)
+
+## 8h, ±20% change, serum, RT
+length(proteins_t8_RT_s_20)
+
+## 2h, ±5% change, plasma, 4C
+length(proteins_t2_4C_p_5)
+
+## 2h, ±20% change, plasma, 4C
+length(proteins_t2_4C_p_20)
+
+## 8h, ±5% change, plasma, 4C
+length(proteins_t8_4C_p_5)
+
+## 8h, ±20% change, plasma, 4C
+length(proteins_t8_4C_p_20)
+
+## 2h, ±5% change, serum, 4C ## no 4C for serum
+## 2h, ±20% change, serum, 4C ## no 4C for serum
+## 8h, ±5% change, serum, 4C ## no 4C for serum
+## 8h, ±20% change, serum, 4C ## no 4C for serum
+
+## create a plot to visualize the number of proteins
+df <- data.frame(
+    t2_RT_p_5 = length(proteins_t2_RT_p_5),
+    t2_RT_p_20 = length(proteins_t2_RT_p_20),
+    t8_RT_p_5 = length(proteins_t8_RT_p_5),
+    t8_RT_p_20 = length(proteins_t8_RT_p_20),
+    t2_RT_s_5 = length(proteins_t2_RT_s_5),
+    t2_RT_s_20 = length(proteins_t2_RT_s_20),
+    t8_RT_s_5 = length(proteins_t8_RT_s_5),
+    t8_RT_s_20 = length(proteins_t8_RT_s_20),
+    t2_4C_p_5 = length(proteins_t2_4C_p_5),
+    t2_4C_p_20 = length(proteins_t2_4C_p_20),
+    t8_4C_p_5 = length(proteins_t8_4C_p_5),
+    t8_4C_p_20 = length(proteins_t8_4C_p_20)
+)
+cols <- colnames(df)
+df <- df %>% tidyr::pivot_longer(1:ncol(df))
+
+c_spl <- strsplit(cols, split = "_")
+df <- tibble::tibble(df, 
+    time = ifelse(unlist(lapply(c_spl, "[", 1)) == "t2", "2h", "8h"),
+    temp = unlist(lapply(c_spl, "[", 2)),
+    tissue = ifelse(unlist(lapply(c_spl, "[", 3)) == "p", "plasma", "serum"),
+    percent = unlist(lapply(c_spl, "[", 4))
+)
+df$name <- factor(df$name, df$name)
+ggplot(df, aes(x = name, y = value)) + 
+    geom_bar(aes(fill = interaction(percent, time)), stat = "identity") +
+    ylim(0, 200) + facet_grid(~ tissue + temp, scales = "free", space = "free") +
+    ylab("number of proteins") + xlab("factor combination") +
+    theme_bw() + theme(axis.text.x = element_text(angle = 90))
+```
+
+
+## Influence of temperature?
+
+### Absolute intensity values (absolute)
+```{r}
+## plasma
+prot_temp_sign <- df_plasma_adj[df_plasma_adj[, "tempRT_p"] <= 0.05, ]
+rownames(prot_temp_sign)
+
+## for serum only one level of temperature
+```
+
+### Absolute intensity values (relative)
+```{r}
+## plasma
+prot_temp_sign <- df_plasma_rel_adj[df_plasma_rel_adj[, "tempRT_p"] <= 0.05, ]
+rownames(prot_temp_sign)
+
+## for serum only one level of temperature
+```
+
+### Change of intensity values ('absolute')
+```{r}
+## plasma
+prot_temp_sign <- df_plasma_diff_adj[df_plasma_diff_adj[, "tempRT_p"] <= 0.05, ]
+rownames(prot_temp_sign)
+
+## for serum only one level of temperature
+```
+
+
+### Change of intensity value ('relative')
+```{r}
+## plasma
+prot_temp_sign <- df_plasma_diff_rel_adj[df_plasma_diff_rel_adj[, "tempRT_p"] <= 0.05, ]
+rownames(prot_temp_sign)
+
+## for serum only one level of temperature
+```
+
+
+## What are the proteins that do not show any changes on the treatments?
+```{r}
+## plasma
+prot_nosign <- df_plasma_adj[df_plasma_adj[, "time_p"] > 0.05 & 
+                            df_plasma_adj[, "tempRT_p"] > 0.05 & 
+                            df_plasma_adj[, "timetempRT_p"] > 0.05, ]
+nrow(prot_nosign)
+
+## serum
+prot_nosign <- df_plasma_adj[df_serum_adj[, "time_p"] > 0.05, ]
+nrow(prot_nosign)
+```
+We will not do this here for absolute intensity values ('relative'), 
+change of intensity values ('absolute') and
+change of intensity values ('relative'). 
+
+# Prepare data input for COSMOS
+
+COSMOS needs as input the result of differential expression such as t-values. 
+We will use here moderated t-tests adjusting for person-specific effects 
+and temperature effects and check for the contrast `time`.
+
+## For plasma samples
+
+Define the model matrix and contrasts.
+```{r mM_plasma}
+cD_ttest <- colData(se_i)
+cD_ttest_p <- cD_ttest[cD_ttest$Type == "Plasma", ]
+
+mM_p <- model.matrix(as.formula("~ 0 + Replicate + Temperature + Time"), data = cD_ttest_p)
+contrasts_time <- limma::makeContrasts(contrasts = "Time", levels = mM_p)
+```
+
+```{r diff_ttest_plasma, eval = TRUE}
+## for raw intensity-derived values
+fit <- limma::lmFit(assay(se_i)[, rownames(mM_p)], design = mM_p)
+fit <- limma::contrasts.fit(fit = fit, contrasts = contrasts_time)
+fit <- limma::eBayes(fit = fit, robust = TRUE)
+tT <- limma::topTable(fit, number = Inf, adjust.method = "fdr", p.value = 1)
+rmarkdown::paged_table(tT)
+tT <- cbind(name = rownames(tT), tT)
+partial_bundle(MatrixQCvis::volcanoPlot(tT))
+write.table(tT, file = "diff_expr_ttest_proteins_time_plasma.txt", sep = "\t",
+      dec = ".", row.names = FALSE, col.names = TRUE)
+```
+
+## For serum samples
+
+Define the model matrix and contrasts
+```{r mM_serum}
+cD_ttest_s <- cD_ttest[cD_ttest$Type == "Serum", ]
+
+mM_s <- model.matrix(as.formula("~ 0 + Replicate + Time"), data = cD_ttest_s)
+contrasts_time <- limma::makeContrasts(contrasts = "Time", levels = mM_s)
+```
+
+```{r diff_ttest_serum, eval = TRUE}
+## for raw intensity-derived values
+fit <- limma::lmFit(assay(se_i)[, rownames(mM_s)], design = mM_s)
+fit <- limma::contrasts.fit(fit = fit, contrasts = contrasts_time)
+fit <- limma::eBayes(fit = fit, robust = TRUE)
+tT <- limma::topTable(fit, number = Inf, adjust.method = "fdr", p.value = 1)
+rmarkdown::paged_table(tT)
+tT <- cbind(name = rownames(tT), tT)
+partial_bundle(MatrixQCvis::volcanoPlot(tT))
+write.table(tT, file = "diff_expr_ttest_proteins_time_serum.txt", sep = "\t",
+    dec = ".", row.names = FALSE, col.names = TRUE)
+```
+
+
+# Summary
+
+The analysis above
+
+- shows that there are individual differences based on person-specific
+  effects (see PLS-DA, section 2.1). However, if we compare the person-specific 
+  effects to the metabolomics data set, the person-specific effects are less
+  pronounced. We included the effect of the `treatment` (time and
+  temperature) as fixed effects and the effect of `person` as a random effect
+  in a mixed linear model, and adjusted for person-specific effects and 
+  `temperature`-specific effects for the moderated t-tests,
+  
+- shows that only few proteins showed a significant association of `time` or the 
+  interaction between `time` and `temp`. It is a matter of further analysis 
+  to scrutinize if this is due to the low number of replicates per factor 
+  combination. Besides this, a high number of proteins exhibit relative
+  changes after 2h and 8h (see section 4.2). Alternatively, 
+  the changes can be due to technical fluctuations of the mass spectrometer,
+  experimental factors or due to other factors,
+  
+- shows that the proteins measured in plasma and serum show similar trends in their 
+  accumulation/degradation (for serum there were more significant proteins,
+  NOTE: no treatment `temp` for serum!), also the number of changed proteins 
+  is similar across the two tissues.
+  

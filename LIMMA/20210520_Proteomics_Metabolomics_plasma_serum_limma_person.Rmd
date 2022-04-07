@@ -1,0 +1,101 @@
+---
+title: "Analysis pre-analytical plasma and serum - Limma to test person effect"
+author: "Thomas Naake"
+date: "05/20/2021"
+fig_width: 15
+fig_height: 10
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: TRUE
+    theme: united
+    number_sections: true
+    highlight: tango
+    self_contained: no
+---
+
+A more head-on, direct analysis to analyse individual effects simply looks at
+differentially quantified/abundant features with a tool such as limma (either covariate by covariate, or also jointly) and counting those with, say, 
+FDR <0.1 as a measure of how important the covariate is.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "pdf")
+knitr::opts_knit$set(root.dir = "C:/Users/naake/Documents/GitLab/20210520_Proteomics_Metabolomics_plasma_serum_MOFA/")
+```
+
+# Load packages
+
+```{r}
+suppressPackageStartupMessages(library(SummarizedExperiment))
+suppressPackageStartupMessages(library(limma))
+```
+
+# Load the SummarizedExperiment objects
+
+Load the `SummarizedExperiment` objects from metabolomics and proteomics.
+
+```{r read_RDS_files}
+## load protein SE
+path_to_file <- "C:/Users/naake/Documents/GitLab/20210517_Proteomics_Torsten_plasma_serum_proteins/Preanalytical_SummarizedExperiment_Protein_imputed.RDS"
+protein <- readRDS(path_to_file)
+protein <- protein[, protein$Replicate != "Biobank"]
+protein_s <- protein[, protein$Type == "Serum"]
+protein_p <- protein[, protein$Type == "Plasma"]
+
+## load metabolite SE
+path_to_file <- "C:/Users/naake/Documents/GitLab/20210112_Metabolomics_Hagen_plasma_serum_metabolites/Preanalytical_SummarizedExperiment_Metabolite_imputed.RDS"
+metabolite <- readRDS(path_to_file)
+metabolite$person <- factor(metabolite$person,
+    levels = as.character(unique(metabolite$person)))
+metabolite <- metabolite[, metabolite$centr == "C1"]
+metabolite_s <- metabolite[, metabolite$tissue == "Serum"]
+metabolite_p <- metabolite[, metabolite$tissue == "Plasma"]
+
+```
+
+```{r}
+p <- 0.05 
+n <- Inf
+
+## protein
+mM_p <- model.matrix(as.formula("~ 1 + Replicate + Temperature * Time"), 
+    data = colData(protein_p))
+fit <- lmFit(assay(protein_p), design = mM_p)
+fit2 <- eBayes(fit, robust = TRUE)
+tT <- topTable(fit2, coef = grep("Replicate", colnames(coef(fit))), 
+    p.value = p, number = n)
+nrow(tT)
+rmarkdown::paged_table(tT)
+
+mM_s <- model.matrix(as.formula("~ 1 + Replicate + Time"), 
+    data = colData(protein_s))
+fit <- lmFit(assay(protein_s), design = mM_s)
+fit2 <- eBayes(fit, robust = TRUE)
+tT <- topTable(fit2, coef = grep("Replicate", colnames(coef(fit))), 
+    p.value = p, number = n)
+nrow(tT)
+rmarkdown::paged_table(tT)
+
+
+## metabolite
+mM_p <- model.matrix(as.formula("~ 1 + person + temp * time"), 
+    data = colData(metabolite_p))
+fit <- lmFit(assay(metabolite_p), design = mM_p)
+fit2 <- eBayes(fit, robust = TRUE)
+tT <- topTable(fit2, coef = grep("person", colnames(coef(fit))), 
+    p.value = p, number = n)
+nrow(tT)
+rmarkdown::paged_table(tT)
+
+mM_s <- model.matrix(as.formula("~ 1 + person + time"), 
+    data = colData(metabolite_s))
+fit <- lmFit(assay(metabolite_s), design = mM_s)
+fit2 <- eBayes(fit, robust = TRUE)
+tT <- topTable(fit2, coef = grep("person", colnames(coef(fit))), 
+    p.value = p, number = n)
+nrow(tT)
+rmarkdown::paged_table(tT)
+```
+
